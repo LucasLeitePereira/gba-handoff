@@ -1,0 +1,29 @@
+# Configuração do docserver. Caminhos relativos valem a partir da pasta deste arquivo.
+
+[docs]
+# Pasta de origem dos documentos.
+fonte = "docs"
+# Onde ficam os textos extraídos (cache regenerável; fora do git).
+normalizado = ".docserver/normalizado"
+# Banco do índice (regenerável).
+indice = ".docserver/indice.db"
+# false = ingestão e busca só léxicas (sem modelo de embeddings, bem mais leve).
+embeddings = false
+# Relativos a `fonte`; a ingestão e o watcher não leem estas entradas.
+# _pendentes e _rejeitados ficam fora do índice: só o que o revisor aprova é buscável.
+ignorar = ["_pendentes", "_rejeitados", "_revisoes.jsonl"]
+
+[revisor]
+# Comando que revisa cada documento pendente; {modelo} vira o valor de `modelo`.
+# Para revisar com outra família de modelos (Codex, Gemini), troque o comando.
+comando = ["claude", "-p", "--model", "{modelo}", "--output-format", "json", "--allowedTools", "Read,Grep,Glob", "--strict-mcp-config"]
+# Use um modelo diferente do que escreve os documentos: LLMs favorecem o próprio texto.
+modelo = "claude-opus-5-5"
+# Pastas relativas a `fonte`: onde o agente escreve, onde o aprovado vai e onde o rejeitado fica.
+pendentes = "_pendentes"
+aprovados = "conhecimento"
+rejeitados = "_rejeitados"
+# Registro (uma linha JSON por decisão) para saber quem aprovou o quê.
+registro = "_revisoes.jsonl"
+# Quantas vezes um documento rejeitado pode voltar para revisão.
+max_tentativas = 3

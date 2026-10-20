@@ -1,0 +1,27 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "build-linux",
+      "displayName": "Linux native (tests, dev)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-linux",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "build-win",
+      "displayName": "Windows x86_64 cross (mingw-w64 posix, static)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-win",
+      "toolchainFile": "${sourceDir}/cmake/mingw-w64.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "build-linux", "configurePreset": "build-linux", "jobs": 4 },
+    { "name": "build-win", "configurePreset": "build-win", "jobs": 4 }
+  ],
+  "testPresets": [
+    { "name": "build-linux", "configurePreset": "build-linux", "output": { "outputOnFailure": true } }
+  ]
+}

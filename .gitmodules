@@ -1,0 +1,6 @@
+[submodule "third_party/mgba"]
+	path = third_party/mgba
+	url = https://github.com/mgba-emu/mgba
+[submodule "third_party/SDL"]
+	path = third_party/SDL
+	url = https://github.com/libsdl-org/SDL

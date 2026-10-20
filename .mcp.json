@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "docserver": {
+      "command": "docserver",
+      "args": [
+        "serve"
+      ]
+    }
+  }
+}

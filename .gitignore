@@ -1,0 +1,9 @@
+.docserver/
+build-*/
+# ROMs comerciais do usuário (nunca versionar)
+roms/
+# adb for Windows (tools/fetch-adb-windows.sh): never versioned
+adb/
+dist/
+*.exe
+AdbWin*.dll
