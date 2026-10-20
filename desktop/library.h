@@ -13,6 +13,9 @@
 #include <thread>
 #include <vector>
 
+#include <SDL3/SDL_keyboard.h>
+#include <SDL3/SDL_scancode.h>
+
 extern "C" {
 #include "gbah_sync.h"
 }
@@ -48,11 +51,22 @@ struct GameInfo {
 };
 
 // User settings of the PC, one `key=value` per line in <root>/settings.ini (unknown keys and bad
-// lines are ignored; a missing file means the defaults). The phone has its own copy of the same
-// settings; they are compared on every connection (see GBAHP_CTL_SETTINGS).
+// lines are ignored; a missing file means the defaults). `prefer_newest` is compared with the phone
+// on every connection (see GBAHP_CTL_SETTINGS); the keymap and the volume are LOCAL to this PC and
+// never travel to the phone.
+enum { kNumPcButtons = 10 };   // GBA buttons in this order: A B L R Start Select Up Down Left Right
 struct Settings {
 	bool prefer_newest = false;   // resolve a version conflict by itself: the newest version wins
+	SDL_Scancode keys[kNumPcButtons];   // keyboard map (ini: key_a=Z ... via SDL_GetScancodeName)
+	int volume = 100;             // 0..100, steps of 10
+	bool muted = false;
+	Settings();                   // defaults
 };
+const char *button_label(int i);                 // "A", "B", "L", "R", "Start", "Select", "Cima", ...
+SDL_Scancode default_key(int i);
+// Keys that cannot be bound to a button: they are fixed shortcuts (Esc, F2, F5, F8, F11) or the
+// volume/mute keys (M, -, +, keypad) or UNKNOWN.
+bool key_reserved(SDL_Scancode k);
 std::string settings_to_text(const Settings &s);
 Settings settings_from_text(const std::string &text);
 

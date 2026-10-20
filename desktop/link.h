@@ -12,6 +12,8 @@
 #include <thread>
 #include <vector>
 
+#include "adbstate.h"
+
 extern "C" {
 #include "gbah_sync.h"
 #include "gbahp.h"
@@ -127,8 +129,17 @@ private:
 	struct RomRx { uint8_t sha1[20] = {}; uint64_t total = 0; std::vector<uint8_t> buf; bool active = false; } rx_;
 };
 
-// Polls `adb devices` (only while no phone is connected) and runs
-// `adb -s SERIAL reverse tcp:PORT tcp:PORT` for every authorised device.
+// What the menu's status card shows about the attached phone (written by the adb threads).
+struct PhoneInfo {
+	PhoneState state = PhoneState::None;
+	std::string serial;
+	std::string message;        // last install failure ("" = none); already says "do not uninstall"
+	bool apk_found = true;      // GBAHandoff.apk exists next to the exe
+};
+
+// Polls `adb devices` (only while no phone is connected), runs
+// `adb -s SERIAL reverse tcp:PORT tcp:PORT` for every authorised device, and checks (once per
+// appearance of the device, and after an install) whether the app is installed and up to date.
 class AdbWatcher {
 public:
 	AdbWatcher(Status &st, uint16_t port, std::string adb_override)
@@ -137,16 +148,29 @@ public:
 	void start();
 	void stop();
 
+	PhoneInfo phone() const;
+	bool can_install() const;            // state NoApp/Outdated, APK present, nothing running
+	void install();                      // UI thread: `adb install -r` + launch, on its own thread
+	void set_apk_path(const std::string &p) { apk_override_ = p; }   // test hook (--apk)
+
 private:
 	void thread_main();
+	void install_main(std::string serial);
 	std::string find_adb() const;
+	std::string apk_path() const;
 	void sleep_ms(int ms);
+	void set_state(PhoneState s, const std::string &serial);
+	void set_message(const std::string &m);
 
 	Status &st_;
 	uint16_t port_;
-	std::string adb_override_;
-	std::thread th_;
+	std::string adb_override_, apk_override_, adb_;
+	std::thread th_, inst_th_;
 	std::atomic<bool> stop_{false};
+	std::atomic<bool> installing_{false};
+	std::atomic<bool> recheck_{false};
+	mutable std::mutex pm_;
+	PhoneInfo info_;
 };
 
 } // namespace cable

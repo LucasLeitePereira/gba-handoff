@@ -56,6 +56,8 @@ public:
 	// Settings (menu): the change is saved and announced to the phone, which asks the user if the two differ.
 	const Settings &settings() const { return settings_; }
 	void set_prefer_newest(bool on);
+	// PC-local settings (keymap, volume, mute): saved, never sent to the phone.
+	void set_local_settings(const Settings &s);
 	// Persistent line for the screen ("" = none): settings differ and the phone has to pick the default.
 	std::string pending_text() const;
 	void quick_save();                        // F5

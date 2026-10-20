@@ -819,6 +819,14 @@ void Hub::on_phone_settings(uint32_t bits, bool chosen)
 	if (settings_pending_) say("Configuracoes diferentes: escolha no celular");
 }
 
+void Hub::set_local_settings(const Settings &s)
+{
+	for (int i = 0; i < kNumPcButtons; i++) settings_.keys[i] = s.keys[i];
+	settings_.volume = s.volume;
+	settings_.muted = s.muted;
+	if (!lib_.save_settings(settings_)) say("Nao foi possivel salvar as configuracoes");
+}
+
 void Hub::set_prefer_newest(bool on)
 {
 	if (settings_.prefer_newest == on) return;

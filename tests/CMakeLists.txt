@@ -104,3 +104,15 @@ if(UNIX)
     endif()
   endif()
 endif()
+
+# ---- desktop: adb output parsing + settings text (keymap/volume) ----
+if(GBAH_BUILD_DESKTOP)
+  add_executable(adbstate_test adbstate_test.cpp)
+  target_link_libraries(adbstate_test PRIVATE gbah_adbstate)
+  add_test(NAME adbstate_test COMMAND adbstate_test)
+
+  add_executable(settings_test settings_test.cpp ${PROJECT_SOURCE_DIR}/desktop/library.cpp)
+  target_include_directories(settings_test PRIVATE ${PROJECT_SOURCE_DIR}/desktop)
+  target_link_libraries(settings_test PRIVATE gbah_sync gbah_core SDL3::SDL3-static)
+  add_test(NAME settings_test COMMAND settings_test)
+endif()

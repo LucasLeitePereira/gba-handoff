@@ -11,6 +11,24 @@ endif()
 option(GBAH_BUILD_DESKTOP "Build the SDL3 desktop app" ON)
 option(GBAH_BUILD_TESTS   "Build tests" ON)
 
+# ---- app version: VERSION (code=N / name=X.Y) is the single source, also read by the Android Gradle build ----
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/VERSION)
+file(STRINGS ${PROJECT_SOURCE_DIR}/VERSION GBAH_VERSION_LINES)
+foreach(line IN LISTS GBAH_VERSION_LINES)
+  if(line MATCHES "^code=([0-9]+)$")
+    set(GBAH_APP_VERSION_CODE ${CMAKE_MATCH_1})
+  elseif(line MATCHES "^name=(.+)$")
+    set(GBAH_APP_VERSION_NAME ${CMAKE_MATCH_1})
+  endif()
+endforeach()
+if(NOT DEFINED GBAH_APP_VERSION_CODE OR NOT DEFINED GBAH_APP_VERSION_NAME)
+  message(FATAL_ERROR "VERSION must contain 'code=N' and 'name=X.Y'")
+endif()
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/generated)
+file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/generated/version.h CONTENT
+"// generated from VERSION by CMake; do not edit\n#pragma once\n#define GBAH_APP_VERSION_CODE @GBAH_APP_VERSION_CODE@\n#define GBAH_APP_VERSION_NAME \"@GBAH_APP_VERSION_NAME@\"\n"
+  @ONLY)
+
 # ---- mGBA: only the static libmgba, GBA core, no frontends/optional deps ----
 # EXCLUDE_FROM_ALL makes mGBA's CMake enter its LIBMGBA_ONLY mode (static lib,
 # no frontends, DISABLE_DEPS). It must stay on add_subdirectory itself.

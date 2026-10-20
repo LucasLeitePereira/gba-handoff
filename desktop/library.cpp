@@ -6,6 +6,7 @@
 #include <SDL3/SDL_timer.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 
@@ -149,9 +150,44 @@ std::string title_of(const std::string &rom_path)
 
 } // namespace
 
+namespace {
+const char *const kBtnIni[kNumPcButtons] = {"key_a", "key_b", "key_l", "key_r", "key_start",
+                                            "key_select", "key_up", "key_down", "key_left", "key_right"};
+const char *const kBtnLabel[kNumPcButtons] = {"A", "B", "L", "R", "Start", "Select", "Cima", "Baixo", "Esquerda", "Direita"};
+const SDL_Scancode kDefaults[kNumPcButtons] = {
+	SDL_SCANCODE_Z, SDL_SCANCODE_X, SDL_SCANCODE_A, SDL_SCANCODE_S, SDL_SCANCODE_RETURN,
+	SDL_SCANCODE_BACKSPACE, SDL_SCANCODE_UP, SDL_SCANCODE_DOWN, SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT};
+} // namespace
+
+Settings::Settings()
+{
+	for (int i = 0; i < kNumPcButtons; i++) keys[i] = kDefaults[i];
+}
+
+const char *button_label(int i) { return i >= 0 && i < kNumPcButtons ? kBtnLabel[i] : ""; }
+SDL_Scancode default_key(int i) { return i >= 0 && i < kNumPcButtons ? kDefaults[i] : SDL_SCANCODE_UNKNOWN; }
+
+bool key_reserved(SDL_Scancode k)
+{
+	switch (k) {
+	case SDL_SCANCODE_UNKNOWN: case SDL_SCANCODE_ESCAPE: case SDL_SCANCODE_F2: case SDL_SCANCODE_F5:
+	case SDL_SCANCODE_F8: case SDL_SCANCODE_F11: case SDL_SCANCODE_M: case SDL_SCANCODE_MINUS:
+	case SDL_SCANCODE_EQUALS: case SDL_SCANCODE_KP_MINUS: case SDL_SCANCODE_KP_PLUS:
+		return true;
+	default: return false;
+	}
+}
+
 std::string settings_to_text(const Settings &s)
 {
-	return std::string("prefer_newest=") + (s.prefer_newest ? "1" : "0") + "\n";
+	std::string t = std::string("prefer_newest=") + (s.prefer_newest ? "1" : "0") + "\n";
+	for (int i = 0; i < kNumPcButtons; i++) {
+		const char *n = SDL_GetScancodeName(s.keys[i]);
+		t += std::string(kBtnIni[i]) + "=" + (n && *n ? n : SDL_GetScancodeName(kDefaults[i])) + "\n";
+	}
+	t += "volume=" + std::to_string(s.volume) + "\n";
+	t += std::string("muted=") + (s.muted ? "1" : "0") + "\n";
+	return t;
 }
 
 Settings settings_from_text(const std::string &text)
@@ -168,7 +204,28 @@ Settings settings_from_text(const std::string &text)
 		if (eq == std::string::npos) continue;
 		const std::string key = line.substr(0, eq), val = line.substr(eq + 1);
 		if (key == "prefer_newest") s.prefer_newest = val == "1" || val == "true";
+		else if (key == "muted") s.muted = val == "1" || val == "true";
+		else if (key == "volume") {
+			// only 0,10,...,100; anything else (garbage, 55, 150, -10) keeps the default
+			char *e = nullptr;
+			long v = strtol(val.c_str(), &e, 10);
+			if (!val.empty() && e && !*e && v >= 0 && v <= 100 && v % 10 == 0) s.volume = (int)v;
+		} else {
+			for (int i = 0; i < kNumPcButtons; i++)
+				if (key == kBtnIni[i]) {
+					SDL_Scancode k = SDL_GetScancodeFromName(val.c_str());
+					if (!key_reserved(k)) s.keys[i] = k;   // unknown name / reserved key: default stays
+				}
+		}
 	}
+	// Two buttons on one key would make one of them unreachable: a hand-edited file like that is
+	// discarded as a whole (the in-game screen swaps instead, so it never writes such a file).
+	for (int i = 0; i < kNumPcButtons; i++)
+		for (int j = i + 1; j < kNumPcButtons; j++)
+			if (s.keys[i] == s.keys[j]) {
+				for (int k = 0; k < kNumPcButtons; k++) s.keys[k] = kDefaults[k];
+				return s;
+			}
 	return s;
 }
 

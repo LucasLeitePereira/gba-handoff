@@ -20,8 +20,12 @@ if(UNIX AND NOT APPLE)
 endif()
 add_subdirectory(${PROJECT_SOURCE_DIR}/third_party/SDL ${CMAKE_BINARY_DIR}/sdl EXCLUDE_FROM_ALL)
 
+add_library(gbah_adbstate STATIC adbstate.cpp)   # pure parsing of adb output (unit-tested)
+target_include_directories(gbah_adbstate PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
 add_executable(gbahandoff main.cpp link.cpp adb.cpp proc.cpp library.cpp handoff.cpp)
-target_link_libraries(gbahandoff PRIVATE gbah_core gbah_net gbah_sync SDL3::SDL3-static)
+target_include_directories(gbahandoff PRIVATE ${CMAKE_BINARY_DIR}/generated)
+target_link_libraries(gbahandoff PRIVATE gbah_core gbah_net gbah_sync gbah_adbstate SDL3::SDL3-static)
 if(WIN32)
   target_link_options(gbahandoff PRIVATE -mwindows)
 endif()
