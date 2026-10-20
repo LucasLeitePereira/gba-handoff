@@ -2,11 +2,11 @@
 titulo: Armadilhas dos testes do motor do celular (comparar states, save da ROM de teste, TSan)
 tipo: armadilha
 gerado_por: claude-sonnet-5-5
-commit: 50fe505
-arquivos: tests/phone_sim.h, tests/phone_link_test.c, tests/phone_migrate_test.c, tests/CMakeLists.txt
+commit: 67beb79
+arquivos: tests/phone_link_test.c, tests/phone_sim.h
 revisado_por: claude-opus-5-5
-revisado_em: 2026-10-20T13:46:06Z
-parecer: Conferido no código: tests/phone_sim.h:453-459 compara o state inteiro e ignora [304,496) e [880,976). Os offsets batem com serialize.h do mGBA: áudio em 0x130-0x1EF e amostras FIFO/renderizadas em 0x370-0x3CF. O comentário diz que a tela da ROM de teste é estática e explica o resíduo.; O item da ROM de teste estava errado e não citava a armadilha principal. Os valores não são só 'reduzidos': phone_link_test.c:181 usa autosave_ms/sav_min_ms = 600000 para desligar o autosave num cenário. E como a ROM regrava o save a cada frame, o hash real do .sav muda sempre. O teste resolve isso com `sav_const` + `sav_bias` (phone_sim.h:209-247, phone_link_test.c:358), que faltava no texto. Corrigido.; Item do `.meta` removido: android-sync-armadilhas, já aprovado, cobre isso ('.meta é escrito por último... tem de esperar o .meta').; O código não comprova a falha do TSan: não há alvo TSan no CMakeLists nem registro da mensagem. Mantive o item como observação de execução, por ser plausível e útil, mas sem afirmar o que o código não mostra. phone_link_test_san existe com ASan/UBSan (CMakeLists.txt:93-103).; Não duplica mgba-integracao-armadilhas (áudio/blip ao vivo) nem contrato-handoff-estado (hash de frame ignora o byte X). Explica o porquê e o sintoma, é conciso e não tem segredos.
+revisado_em: 2026-10-20T14:27:53Z
+parecer: Os quatro itens que já estavam aprovados continuam iguais. Já foram conferidos na revisão anterior (phone_sim.h compara o state inteiro e ignora [304,496) e [880,976); sav_const/sav_bias; 600000 para desligar o autosave; phone_link_test_san só com ASan/UBSan). Esta versão também corrige a cópia aprovada, que estava corrompida (linhas duplicadas e texto cortado).; O item novo (provar quais teclas o PC aplicou) confere com o código. Em tests/roms/gbah_test.s:42-44 e 62-63, a ROM lê KEYINPUT, inverte, fica com 10 bits e grava com `strb r5, [r1, #1]`, ou seja, só o byte baixo vai para SRAM[1] a cada frame. Em tests/phone_link_test.c:449-505, o cenário H lê `.sav[1]` do celular depois do RETURN (modos 0-2) e do próprio PC (modos 3-4). Em core_test.c:96, a verificação é `INPUT & 0xFF`. Como o byte gravado é só o baixo, R e L (bits 8-9) de fato não podem ser verificados assim.; O conhecimento é novo e não duplica nada: nenhum documento aprovado explica como verificar, sem gancho de teste no PC, quais teclas o PC aplicou, nem o limite de um byte. contrato-handoff-estado só define a ordem dos bits.; O texto explica o porquê (não há gancho no PC, então o .sav serve de canal de observação) e a armadilha (R e L ficam de fora), em vez de resumir o código. É conciso e não tem segredos nem dados pessoais.
 ---
 
 # Armadilhas dos testes do motor do celular
@@ -29,3 +29,4 @@ parecer: Conferido no código: tests/phone_sim.h:453-459 compara o state inteiro
   TSan no CMake). A cobertura de threads é só ASan/UBSan (`phone_link_test_san`, com as mesmas
   armadilhas de largada do ASan de testes-armadilhas-fase4). Corridas de dados no motor só são
   pegas revisando os locks.
+- **Provar quais teclas o PC aplicou, sem gancho de teste no PC.** A ROM de teste grava as teclas em `SRAM[1]` a cada frame; o `.sav` que volta no RETURN (ou o do próprio PC) mostra o que foi aplicado (cenário H). Armadilha: é um byte só (`keys & 0xFF`, como em `core_test.c`), então só cobre A, B, Select, Start e as quatro direções; R e L (bits 8-9) não são verificáveis assim.
