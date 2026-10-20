@@ -36,6 +36,8 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // opened by the PC (adb `am start ... autoOpen`) while a game screen is already up: never interrupt it
+        if (intent.getBooleanExtra(EXTRA_AUTO_OPEN, false) && GameActivity.alive > 0) { finish(); return }
         roms = LinkClient.boot(this)
         val dp = { v: Float -> LinkUi.dp(this, v) }
         val col = LinearLayout(this).apply {
@@ -88,12 +90,14 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        if (!::notice.isInitialized) return
         ui.removeCallbacks(refresh)
         LinkClient.onBackground()
     }
 
     override fun onResume() {
         super.onResume()
+        if (isFinishing) return   // auto-open that found a game screen up
         LinkClient.onForeground(this)
         lastRows = ""
         ui.post(refresh)
@@ -108,13 +112,13 @@ class MainActivity : Activity() {
             else -> "Procurando o PC (cabo USB + adb)..."
         }
         st.notices.lastOrNull()?.let { notice.say(it) }
-        // the PC handed a game back and none is open: open it
+        // the PC handed a game back, or it is playing one and none is open here: show it. The engine keeps the request
+        // until it is acked (not consumed by polling), and only this screen asks. Without the ROM here GameActivity
+        // opens in view-only mode ("No PC" + controller).
         st.openRequest?.let { sha ->
-            if (roms.find(sha) != null) {
-                LinkClient.ackOpen(sha)
-                startActivity(Intent(this, GameActivity::class.java).putExtra(GameActivity.EXTRA_SHA1, sha))
-                return
-            }
+            LinkClient.ackOpen(sha)
+            startActivity(Intent(this, GameActivity::class.java).putExtra(GameActivity.EXTRA_SHA1, sha))
+            return
         }
         val c = st.conflicts.firstOrNull()
         if (c != null) conflictPanel.show(c, roms.find(c.sha1)?.title?.ifBlank { null } ?: "jogo ${Fmt.shortSha(c.sha1)}") else conflictPanel.hide()
@@ -188,6 +192,6 @@ class MainActivity : Activity() {
         }
     }
 
-    private companion object { const val REQ_ROM = 1 }
+    companion object { private const val REQ_ROM = 1; const val EXTRA_AUTO_OPEN = "autoOpen" }
 }
 

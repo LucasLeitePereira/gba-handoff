@@ -86,4 +86,15 @@ class LinkStateTest {
         assertFalse(Fmt.shortSha(a).length != 8)
         assertTrue(Fmt.shortSha(b).startsWith("01234567"))
     }
+
+    @Test fun pcPlayingAdoptedShowsOnPcAndOpenRequest() {
+        // phone_link adopted the game the PC plays: "on the PC" (H), the PC plays it (P) and the UI is asked once to show it (O)
+        val s = LinkState.parse("S 2 PC\nH $a 1700000200000\nP 1 $a\nO $a\n")
+        assertEquals(setOf(a), s.onPc)
+        assertEquals(a, s.pcPlaying)
+        assertEquals(a, s.openRequest)
+        // after the ack the engine stops emitting O
+        assertNull(LinkState.parse("S 2 PC\nH $a 1\nP 1 $a\n").openRequest)
+        assertEquals("Este jogo n\u00e3o est\u00e1 no celular", OnPcText.NO_ROM)
+    }
 }

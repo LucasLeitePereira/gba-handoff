@@ -116,6 +116,8 @@ struct phone_link {
 	int refuse_status; unsigned refuse_proto;   /* last HELLO refusal (mtx) */
 	char notices[MAX_NOTICES][200]; int nnotice;
 	int open_has; uint8_t open_sha[20];
+	int view_has; uint8_t view_sha[20];  /* a game shown without a core (no ROM here): controller mode needs to know it (mtx) */
+	int open_adopt;                     /* the O record asks to SHOW a game the PC plays (not a hand-back); dies with the session (mtx) */
 	int rx_active, rx_pct; uint8_t rx_sha[20];
 	int held;                           /* what the host was last asked (hold_mtx) */
 
@@ -685,6 +687,31 @@ static int apply_stored(phone_link *p, const uint8_t sha[20])
 	return rc;
 }
 
+/* The PC is playing `sha` and no handoff of ours is in flight: from now on that game is "on the PC" here
+ * too (held, never saved, never emulated), so the session ends with a single owner. Without this the
+ * phone ran its own copy next to the PC's. Returns 1 when the mark was set now. */
+static int adopt_pc_game(phone_link *p, const uint8_t sha[20])
+{
+	int done = 0;
+	pthread_mutex_lock(&p->mtx);
+	if (!p->on_pc_has && !p->handoff_pending) { p->on_pc_has = 1; memcpy(p->on_pc_sha, sha, 20); done = 1; }
+	pthread_mutex_unlock(&p->mtx);
+	if (done) { update_hold(p); LOGI("adopted the game the PC plays"); }
+	return done;
+}
+
+/* Asks the UI (once: it acks) to show `sha`, which the PC plays, when no game is open here. */
+static void request_show(phone_link *p, const uint8_t sha[20])
+{
+	uint8_t cur[20];
+	if (loaded_sha(p, cur)) return;   /* a game screen is up: never interrupt it */
+	pthread_mutex_lock(&p->mtx);
+	if (p->on_pc_has && !p->handoff_pending && !memcmp(p->on_pc_sha, sha, 20) && !p->open_has) {
+		p->open_has = 1; memcpy(p->open_sha, sha, 20); p->open_adopt = 1;
+	}
+	pthread_mutex_unlock(&p->mtx);
+}
+
 /* The PC no longer plays the game it had (cable pulled, closed, switched): back to the phone from
  * the last copy it stored. */
 static void leave_on_pc(phone_link *p, const char *why)
@@ -706,6 +733,7 @@ static void leave_on_pc(phone_link *p, const char *why)
 	if (is_cur && apply_stored(p, sha) != 0) notice(p, "Nao foi possivel retomar o jogo guardado");
 	pthread_mutex_lock(&p->mtx);
 	p->on_pc_has = 0;
+	if (p->open_adopt) { p->open_has = 0; p->open_adopt = 0; }
 	pthread_mutex_unlock(&p->mtx);
 	update_hold(p);
 	snprintf(msg, sizeof msg, "%s: retomando do ultimo espelho (%s)", why, when);
@@ -826,7 +854,7 @@ static void handle_push(sess_t *s, pushcopy *pc)
 			else notice(p, "Nao foi possivel carregar o estado recebido");
 		} else if (handoff) {
 			pthread_mutex_lock(&p->mtx);
-			p->open_has = 1;
+			p->open_has = 1; p->open_adopt = 0;
 			memcpy(p->open_sha, pc->sha1, 20);
 			pthread_mutex_unlock(&p->mtx);
 		}
@@ -1094,13 +1122,15 @@ static void process_pc_library(sess_t *s)
 	for (i = 0; i < s->nplib; i++) {
 		const gbahp_lib_entry *e = &s->plib[i];
 		gbah_meta m, r;
-		int d, is_cur = has_cur && !memcmp(cur, e->sha1, 20), on_pc_this;
+		int d, is_cur = has_cur && !memcmp(cur, e->sha1, 20), on_pc_this, pc_this;
 		store_meta_locked(p, e->sha1, &m, NULL, NULL);
 		r = meta_of_entry(e);
 		d = gbah_sync_decide(&m, &r);
 		if (is_cur) cur_listed = 1;
 		pthread_mutex_lock(&p->mtx);
 		on_pc_this = p->on_pc_has && !memcmp(p->on_pc_sha, e->sha1, 20);
+		/* the PC plays this very game, we have no handoff pending and no OTHER game is open */
+		pc_this = pc_playing && !memcmp(pc_sha, e->sha1, 20) && !p->handoff_pending && (!has_cur || is_cur);
 		pthread_mutex_unlock(&p->mtx);
 		LOGI("library: decide=%d is_cur=%d", d, is_cur);
 		switch (d) {
@@ -1108,6 +1138,7 @@ static void process_pc_library(sess_t *s)
 		case GBAH_SYNC_NOTHING:
 			if (on_pc_this && s->leave_pending) { s->leave_pending = 0; leave_on_pc(p, "O PC parou de jogar"); break; }
 			if (on_pc_this) break;                                   /* it is on the PC already */
+			if (d == GBAH_SYNC_NOTHING && pc_this && !is_cur) { adopt_pc_game(p, e->sha1); break; }   /* same version: the PC keeps playing */
 			if (is_cur && (!pc_playing || !memcmp(pc_sha, e->sha1, 20))) { start_handoff(s, e->sha1); break; }
 			if (d == GBAH_SYNC_SEND) push_game(s, e->sha1, 0, K_SYNC);
 			break;
@@ -1120,6 +1151,8 @@ static void process_pc_library(sess_t *s)
 			if (on_pc_this && s->leave_pending) {   /* apply the PC's copy when it arrives, then play here */
 				s->leave_pending = 0; s->leave_set = 1; s->leave_at = mono_ms();
 				memcpy(s->leave_sha, e->sha1, 20);
+			} else if (pc_this) {   /* the PC's copy is the newer one and it plays it: only store it (hold), never emulate here */
+				adopt_pc_game(p, e->sha1);
 			}
 			break;
 		}
@@ -1135,13 +1168,16 @@ static void process_pc_library(sess_t *s)
 		if (!cur_listed && m.has_data) start_handoff(s, cur);
 	}
 	if (has_cur && pc_playing && memcmp(pc_sha, cur, 20)) notice(p, "O PC esta jogando outro jogo: este continua no celular");
+	if (pc_playing && !has_cur) request_show(p, pc_sha);   /* menu open: show the game the PC plays (also after a reconnect) */
 }
 
 static void handle_status(sess_t *s, const gbahp_control *c)
 {
 	phone_link *p = s->p;
-	int playing = c->arg != 0, leave = 0, placed = 0, i;
+	int playing = c->arg != 0, leave = 0, placed = 0, i, started;
 	pthread_mutex_lock(&p->mtx);
+	/* a CHANGE to "plays G" (a repeated G->G is the PC finishing a hand-back: it must not re-adopt) */
+	started = playing && (!p->pc_playing || memcmp(p->pc_sha, c->sha1, 20));
 	p->pc_playing = playing;
 	if (playing) memcpy(p->pc_sha, c->sha1, 20); else memset(p->pc_sha, 0, 20);
 	if (playing)   /* the PC took the game we asked it to continue (PLACE_PC) */
@@ -1158,6 +1194,11 @@ static void handle_status(sess_t *s, const gbahp_control *c)
 	pthread_mutex_unlock(&p->mtx);
 	s->got_status = 1;
 	if (placed) { update_hold(p); notice(p, "Jogando no PC"); }
+	/* the PC started a game while we are connected and idle (before the LIBRARY is processed that does it) */
+	if (started && !placed && !leave && s->lib_done) {
+		uint8_t cur[20];
+		if (!loaded_sha(p, cur) && adopt_pc_game(p, c->sha1)) request_show(p, c->sha1);
+	}
 	if (leave && !s->lib_done) s->leave_pending = 1;   /* (re)connecting: first see what the PC has to give back */
 	else if (leave) leave_on_pc(p, "O PC parou de jogar");
 }
@@ -1200,8 +1241,14 @@ static int input_allowed(phone_link *p)
 {
 	uint8_t cur[20];
 	int ok;
-	if (!atomic_load(&p->control_on) || !loaded_sha(p, cur)) return 0;
+	int has;
+	if (!atomic_load(&p->control_on)) return 0;
+	has = loaded_sha(p, cur);   /* (the host callback is never called under mtx) */
 	pthread_mutex_lock(&p->mtx);
+	if (!has) {   /* no core: the game the screen shows without a ROM (phone_set_view), if any */
+		if (!p->view_has) { pthread_mutex_unlock(&p->mtx); return 0; }
+		memcpy(cur, p->view_sha, 20);
+	}
 	ok = p->on_pc_has && !memcmp(p->on_pc_sha, cur, 20) && p->pc_playing && !memcmp(p->pc_sha, cur, 20);
 	pthread_mutex_unlock(&p->mtx);
 	return ok;
@@ -1575,6 +1622,7 @@ static void session_cleanup(phone_link *p)
 	 * the user may play it here anyway (phone_cmd_play_here) or reconnect (the PC's copy then wins/ties). */
 	if (p->handoff_pending) { p->on_pc_has = 1; memcpy(p->on_pc_sha, p->handoff_sha, 20); }
 	p->handoff_pending = 0;
+	if (p->open_adopt) { p->open_has = 0; p->open_adopt = 0; }
 	p->pc_playing = 0;
 	p->pc_pref_known = 0;
 	p->nplace = 0;
@@ -1803,10 +1851,18 @@ int phone_cmd_play_here(phone_link *p)
 	return 0;
 }
 
+void phone_set_view(phone_link *p, const uint8_t sha1[20])
+{
+	pthread_mutex_lock(&p->mtx);
+	p->view_has = sha1 != NULL;
+	if (sha1) memcpy(p->view_sha, sha1, 20);
+	pthread_mutex_unlock(&p->mtx);
+}
+
 void phone_ack_open(phone_link *p, const uint8_t sha1[20])
 {
 	pthread_mutex_lock(&p->mtx);
-	if (p->open_has && !memcmp(p->open_sha, sha1, 20)) p->open_has = 0;
+	if (p->open_has && !memcmp(p->open_sha, sha1, 20)) { p->open_has = 0; p->open_adopt = 0; }
 	pthread_mutex_unlock(&p->mtx);
 }
 

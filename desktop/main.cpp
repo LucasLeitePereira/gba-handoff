@@ -880,6 +880,7 @@ int main(int argc, char **argv)
 			}
 		}
 
+		adb.set_pc_playing(hub.mode() == Hub::Mode::Playing);   // gates the app auto-open on a freshly plugged phone
 		if (unsigned g = link_status.generation(); g != seen_gen || hub.mode() != seen_mode || !seen_mode_valid) {
 			seen_gen = g;
 			std::string t = link_status.title();

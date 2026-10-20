@@ -8,6 +8,7 @@
 
 #include <iterator>
 #include <map>
+#include <set>
 #include <sstream>
 
 namespace cable {
@@ -15,6 +16,7 @@ namespace cable {
 namespace {
 const int kPollMs = 2000;          // `adb devices` period while not connected
 const int kCmdTimeoutMs = 8000;    // first call may start the adb server
+const Uint64 kAutoOpenWaitMs = 3000; // a Ready phone that sent no session for this long gets the app opened
 const Uint64 kRereverseMs = 10000; // re-issue reverse while still not connected (adb server restarts lose it)
 
 struct Dev { std::string serial, state; };
@@ -148,6 +150,24 @@ void AdbWatcher::install_main(std::string serial)
 	installing_ = false;
 }
 
+// The PC plays and the phone is plugged with the app installed and up to date, but no session came within
+// kAutoOpenWaitMs: open the app (it shows the game in "No PC"). At most once per physical connection.
+void AdbWatcher::maybe_auto_open(const std::string &serial, PhoneState ps, std::map<std::string, uint64_t> &ready_since,
+                                 std::set<std::string> &done)
+{
+	if (ps != PhoneState::Ready || done.count(serial) || installing_) return;
+	Uint64 now = SDL_GetTicks();
+	auto it = ready_since.find(serial);
+	if (it == ready_since.end()) { ready_since[serial] = now; return; }
+	if (now - it->second < kAutoOpenWaitMs) return;
+	done.insert(serial);   // decided: whatever the answer is, not again for this connection
+	if (!pc_playing_ || st_.connected()) return;
+	std::string out;
+	int rc = proc::run({adb_, "-s", serial, "shell", "am", "start", "-n", "io.gbahandoff/.MainActivity",
+	                    "--ez", "autoOpen", "true"}, kCmdTimeoutMs, out);
+	SDL_Log("adb: auto-open on %s rc=%d", serial.c_str(), rc);
+}
+
 void AdbWatcher::thread_main()
 {
 	adb_ = find_adb();
@@ -157,6 +177,10 @@ void AdbWatcher::thread_main()
 	std::map<std::string, Uint64> reversed;   // serial -> time of the last successful reverse
 	std::map<std::string, int> checked;       // serial -> installed versionCode (kVersionAbsent = none); asked once
 	bool warned_missing = false;
+	// Auto-open: once per physical connection (serial leaves the set only when the device disappears from
+	// `adb devices`), never in a loop. ready_since: when the phone was first seen Ready.
+	std::map<std::string, Uint64> ready_since;
+	std::set<std::string> auto_done;
 
 	while (!stop_) {
 		{
@@ -167,6 +191,9 @@ void AdbWatcher::thread_main()
 		}
 		if (recheck_.exchange(false)) checked.clear();
 		if (st_.connected()) {   // light polling: nothing to do while a phone is connected
+			for (const auto &r : reversed) auto_done.insert(r.first);   // it opened the app by itself: never launch it later
+			for (const auto &r : ready_since) auto_done.insert(r.first);
+			ready_since.clear();
 			reversed.clear();    // a replug after this session must redo the reverse
 			checked.clear();     // and the app may have been changed meanwhile
 			if (!installing_) set_state(PhoneState::Ready, "");
@@ -219,6 +246,18 @@ void AdbWatcher::thread_main()
 			}
 			any_ready = true;
 		}
+		{   // forget devices that were unplugged (a replug is a new physical connection)
+			std::map<std::string, Uint64> rs;
+			std::set<std::string> ad;
+			for (const Dev &d : devs) {
+				if (d.state != "device") continue;
+				auto r = ready_since.find(d.serial);
+				if (r != ready_since.end()) rs[d.serial] = r->second;
+				if (auto_done.count(d.serial)) ad.insert(d.serial);
+			}
+			ready_since.swap(rs);
+			auto_done.swap(ad);
+		}
 		reversed.swap(still);   // devices that disappeared are forgotten: replug redoes the reverse
 		for (auto it = checked.begin(); it != checked.end();) {   // a replugged phone is asked again
 			bool present = false;
@@ -228,7 +267,11 @@ void AdbWatcher::thread_main()
 		if (!installing_) {
 			if (!target.empty()) {
 				auto c = checked.find(target);
-				if (c != checked.end()) set_state(classify_app(c->second, GBAH_APP_VERSION_CODE), target);
+				if (c != checked.end()) {
+					PhoneState ps = classify_app(c->second, GBAH_APP_VERSION_CODE);
+					set_state(ps, target);
+					maybe_auto_open(target, ps, ready_since, auto_done);
+				}
 				// else: version not read yet; keep the previous state
 			} else {
 				set_state(any_unauth ? PhoneState::Unauthorized : PhoneState::None, "");

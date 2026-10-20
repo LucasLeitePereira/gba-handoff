@@ -20,6 +20,10 @@
  *  F  incompatible core version: the PC refuses, the phone reports REFUSED.
  *  H  phone as the PC's controller (phase 5): INPUT applied only while the game is on the PC,
  *     dropped before the handoff, zeroed when the session ends (positive and negative controls).
+ *  I  the PC is ALREADY playing when the phone connects (mode 0: app at the menu; mode 1: the same game open
+ *     and idle on the phone, with the PC ahead). The phone adopts the game as
+ *     "on the PC" (O record to show it, once; frames frozen even if the user opens it; stored copy == the PC's
+ *     mirror); "play on the phone" (RETURN) has no conflict and only the phone advances afterwards.
  * POSIX only. */
 #include "phone_sim.h"
 
@@ -277,7 +281,7 @@ static void scenario_c(void)
 	gbah_free(rb);
 	/* (a .state whose .meta is not written yet reads as the phone's own progress: wait for the PC's version) */
 	CHECK(WAIT((store_meta_of(&ph, &m), m.has_data && memcmp(m.version.dev, ph.dev, 16) != 0), 15000));   /* stored as a mirror */
-	CHECK(!on_pc(&ph));                                           /* nothing loaded: nothing to hold */
+	CHECK(on_pc(&ph));                                           /* the PC plays it: adopted as "on the PC" (nothing is loaded here, so nothing to hold) */
 	phone_link_stop(ph.link);
 	CHECK(pc_stop(&pc) == 0);
 	{ char *l = slurp(pc.log); if (failures) fprintf(stderr, "--- C: desktop log ---\n%s", l); free(l); }
@@ -435,14 +439,14 @@ static void scenario_p(int mode)
 		phone_cmd_settings_set(ph.link, 1);                    /* chosen for both */
 		CHECK(WAIT((notices_poll(&ph, &nt), !has_conflict(&ph)), 15000));
 		CHECK(notice_wait(&ph, &nt, "Mantida a versao mais recente", 5000));
-			CHECK(strstr(nt.all, mode == 1 ? "(celular" : "(PC") != NULL);
+		CHECK(WAIT((notices_poll(&ph, &nt), strstr(nt.all, mode == 1 ? "(celular" : "(PC") != NULL), 5000));   /* (was racy: the notice can lag the panel) */
 		CHECK(!has_rec(&ph, "D "));
 		{ char ini[400]; snprintf(ini, sizeof ini, "%s/settings.ini", data); CHECK(WAIT(file_exists(ini), 5000)); }
 		if (mode == 1) CHECK(WAIT(count_backups(games_pc) == 1, 5000));   /* the loser (the PC's) is a backup */
-		else CHECK(count_backups(ph.games) == 1);              /* the loser (the phone's) is a backup */
+		else CHECK(WAIT(count_backups(ph.games) == 1, 5000));  /* the loser (the phone's) is a backup (written when the PC's copy lands) */
+		if (mode == 2) CHECK(WAIT((store_meta_of(&ph, &aft), memcmp(aft.version.dev, ph.dev, 16) != 0), 5000));   /* the PC advanced on open: its own device id */
 		store_meta_of(&ph, &aft);
-		if (mode == 2) CHECK(memcmp(aft.version.dev, ph.dev, 16) != 0);   /* the PC advanced on open: its own device id */
-		else CHECK(memcmp(aft.version.dev, ph.dev, 16) == 0);
+		if (mode != 2) CHECK(memcmp(aft.version.dev, ph.dev, 16) == 0);
 	} else {
 		for (i = 0; i < 25; i++) { CHECK(has_conflict(&ph)); usleep(80000); }   /* the panel stays: nothing decides alone */
 		CHECK(!has_rec(&ph, "D "));
@@ -681,6 +685,106 @@ static void scenario_h(void)
 	for (m = 0; m < 6; m++) { scenario_h_mode(m); kill_all_pcs(); }
 }
 
+
+/* I: the PC plays when the phone connects. mode 0: phone at the menu, then the user opens the game.
+ * mode 1: the game is open and idle on the phone (same version as the PC had), the PC is ahead -> RECEIVE.
+ */
+static void scenario_i(int mode)
+{
+	Sim ph;
+	Pc pc;
+	char data[300], games_pc[340], nm[16], cmd[800];
+	uint16_t port = free_port();
+	gbah_meta pm, m, m0;
+	uint32_t f0, a;
+	int i;
+
+	snprintf(nm, sizeof nm, "pc_i%d", mode);
+	snprintf(data, sizeof data, "%s/%s", g_base, nm);
+	snprintf(games_pc, sizeof games_pc, "%s/games", data);
+	snprintf(nm, sizeof nm, "ph_i%d", mode);
+	phone_up(&ph, nm, (uint8_t)(0x90 + mode), 600000, 600000, port, NULL);
+	if (mode == 1) {   /* the phone has progress; the PC starts from the very same copy */
+		REQUIRE(sim_load_game(&ph, 1) == 1);
+		sim_run(&ph);
+		usleep(400000);
+		sim_pause(&ph);
+		CHECK(phone_save_now(ph.link) == 0);
+		store_meta_of(&ph, &m0);
+		{   /* a copy both sides already agreed on: base == version (as after a sync) */
+			void *st = NULL, *sv = NULL;
+			size_t sn = 0, vn = 0;
+			REQUIRE(gbah_store_read(ph.games, g_sha, &st, &sn, &sv, &vn) == 0);
+			m0.base = m0.version;
+			REQUIRE(gbah_store_commit(ph.games, &m0, st, sn, vn ? sv : NULL, vn, NULL, 0) == 0);
+			gbah_free(st); gbah_free(sv);
+		}
+		snprintf(cmd, sizeof cmd, "mkdir -p '%s' && cp '%s'/* '%s'/", games_pc, ph.games, games_pc);
+		REQUIRE(system(cmd) == 0);
+	}
+	snprintf(nm, sizeof nm, "pc_i%d", mode);
+	REQUIRE(pc_start(&pc, g_exe, g_fake_adb, nm, data, port, g_rom, "300") == 0);
+	if (mode == 1) {   /* the PC moves on alone before the cable is plugged: it is ahead of the phone */
+		CHECK(WAIT((pc_data_meta(data, &pm), pm.has_data && pm.frame > m0.frame + 20), 20000));
+		CHECK(pm.version.counter != m0.version.counter || memcmp(pm.version.dev, m0.version.dev, 16) != 0);
+	} else {
+		usleep(1500000);   /* the PC is playing for a while */
+	}
+	phone_link_start(ph.link);
+	REQUIRE(WAIT(phone_link_status(ph.link) == PL_ST_CONNECTED, 20000));
+
+	if (mode == 0) {
+		/* the UI is told ONCE to show the game the PC plays, and the game counts as "on the PC" */
+		CHECK(WAIT(has_rec(&ph, "O "), 15000));
+		CHECK(on_pc(&ph));
+		CHECK(!has_conflict(&ph));
+		phone_ack_open(ph.link, g_sha);
+		CHECK(!has_rec(&ph, "O "));                              /* consumed: not offered again */
+		usleep(1200000);
+		CHECK(!has_rec(&ph, "O "));
+		/* the PC's mirror is stored (version of the PC) and is what the phone shows */
+		CHECK(WAIT((store_meta_of(&ph, &m), m.has_data && memcmp(m.version.dev, ph.dev, 16) != 0), 15000));
+		/* the user opens the game on the phone (GameActivity): it must stay frozen */
+		store_meta_of(&ph, &m0);
+		CHECK(sim_load_game(&ph, 1) == 0);                        /* resumed from the stored mirror */
+		sim_run(&ph);
+		f0 = sim_frame(&ph);
+		usleep(900000);
+		CHECK(sim_frame(&ph) == f0);                              /* HELD: not one frame (the bug: it ran next to the PC) */
+		CHECK(on_pc(&ph));
+		store_meta_of(&ph, &m);
+		CHECK(f0 >= m0.frame && f0 <= m.frame);                   /* what it holds is a PC mirror (not its own progress) */
+		CHECK(memcmp(m.version.dev, ph.dev, 16) != 0);            /* the stored version is the PC's */
+		CHECK(pc_data_meta(data, &pm) == 0 && pm.frame >= m.frame);
+	} else if (mode == 1) {
+		f0 = sim_frame(&ph);
+		sim_run(&ph);
+		CHECK(WAIT(on_pc(&ph), 15000));                           /* adopted: RECEIVE, no conflict */
+		CHECK(!has_rec(&ph, "O "));                               /* a game screen is up: it is not interrupted */
+		CHECK(WAIT((store_meta_of(&ph, &m), m.frame > m0.frame + 20), 15000));   /* the PC's copy was stored ... */
+		usleep(900000);
+		CHECK(sim_frame(&ph) == f0);                              /* ... and the idle phone core was NOT woken up */
+		for (i = 0; i < 10; i++) { CHECK(!has_conflict(&ph)); usleep(60000); }
+	}
+	/* "play on the phone": RETURN, the PC hands the current state over. No conflict, one owner. */
+	phone_cmd_return(ph.link);
+	CHECK(WAIT(!on_pc(&ph), 20000));
+	CHECK(!has_conflict(&ph));
+	store_meta_of(&ph, &m);
+	CHECK(WAIT(sim_frame(&ph) > m.frame, 5000));              /* now the phone advances ... */
+	a = sim_frame(&ph);
+	CHECK(a >= m.frame && a > f0);
+	usleep(600000);
+	CHECK(sim_frame(&ph) > a);
+	CHECK(WAIT(log_has(&pc, "mode Returning -> WaitPhone"), 10000));   /* ... and the PC stopped */
+	CHECK(!log_has(&pc, "Conflict"));
+	sim_pause(&ph);
+	phone_link_stop(ph.link);
+	CHECK(pc_stop(&pc) == 0);
+	{ char *l = slurp(pc.log); if (failures) fprintf(stderr, "--- I%d: desktop log ---\n%s", mode, l); free(l); }
+	sim_destroy(&ph);
+}
+
 int main(int argc, char **argv)
 {
 	if (argc < 5) { fprintf(stderr, "uso: %s <gbahandoff> <rom.gba> <rom-sha1> <fake_adb.sh> [cenarios]\n", argv[0]); return 2; }
@@ -688,7 +792,7 @@ int main(int argc, char **argv)
 	test_init(argv[2], argv[3], "phone");
 	install_cleanup(300);
 	{
-		const char *only = argc > 5 ? argv[5] : "abcdefghpq";   /* optional: run only some scenarios (debugging) */
+		const char *only = argc > 5 ? argv[5] : "abcdefghpqi";   /* optional: run only some scenarios (debugging) */
 		if (strchr(only, 'a')) { scenario_a_b(); kill_all_pcs(); }
 		if (strchr(only, 'c')) { scenario_c(); kill_all_pcs(); }
 		if (strchr(only, 'd')) { scenario_d(); kill_all_pcs(); }
@@ -698,6 +802,7 @@ int main(int argc, char **argv)
 		if (strchr(only, 'f')) scenario_f();
 		if (strchr(only, 'g')) scenario_g();
 		if (strchr(only, 'h')) { scenario_h(); kill_all_pcs(); }
+		if (strchr(only, 'i')) { scenario_i(0); kill_all_pcs(); scenario_i(1); kill_all_pcs(); }
 	}
 	kill_all_pcs();
 	if (failures) { fprintf(stderr, "phone_link_test: %d falha(s)\n", failures); return 1; }

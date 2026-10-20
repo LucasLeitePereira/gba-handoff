@@ -214,6 +214,14 @@ J(void, nativeAckOpen)(JNIEnv *env, jclass cls, jstring sha)
 	if (g_link && sha_from_jstring(env, sha, id) == 0) phone_ack_open(g_link, id);
 }
 
+J(void, nativeSetView)(JNIEnv *env, jclass cls, jstring sha)
+{
+	uint8_t id[20];
+	(void)cls;
+	if (!g_link) return;
+	if (sha && sha_from_jstring(env, sha, id) == 0) phone_set_view(g_link, id); else phone_set_view(g_link, NULL);
+}
+
 /* Store migration (idempotent). Works before the engine exists. */
 J(jint, nativeMigrate)(JNIEnv *env, jclass cls, jstring gamesDir, jstring backupDir, jbyteArray id)
 {

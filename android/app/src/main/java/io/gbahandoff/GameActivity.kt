@@ -25,6 +25,8 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var surface: SurfaceView
     private lateinit var root: FrameLayout
     private var sha1: String? = null
+    /** The game is on the PC and its ROM is not on this phone: only the "No PC" screen and the controller, no core. */
+    private var noRom = false
     private var padHost: PadHost? = null
     private var curW = 0
     private var curH = 0
@@ -53,8 +55,8 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         // black cover above the surface (which keeps the last frame): the game picture is never shown while the game is on the PC
         onPcScreen = OnPcScreen(this, { LinkClient.doReturn() }, { confirmPlayHere() }) { on -> LinkClient.setControlMode(this, on); refreshLink() }
         root.addView(onPcScreen, FrameLayout.LayoutParams(-1, -1))
-        padHost = PadHost(this, { Native.setKeys(it); LinkClient.sendKeys(it) }) { editing ->   // pad layout editor: pause while editing
-            if (editing) Native.stop() else if (sha1 != null) Native.start()
+        padHost = PadHost(this, { if (!noRom) Native.setKeys(it); LinkClient.sendKeys(it) }) { editing ->   // pad layout editor: pause while editing
+            if (noRom) Unit else if (editing) Native.stop() else if (sha1 != null) Native.start()
         }
         root.addView(padHost, FrameLayout.LayoutParams(-1, -1))
         roms = LinkClient.boot(this)
@@ -80,9 +82,15 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         setContentView(root)
         hideSystemBars()
 
-        if (!Native.create()) return fail("Falha ao criar o core")
+        alive++
         // a ROM picked now (uri) or one the library knows (sha1: received from the PC, or handed back)
         val wanted = intent.getStringExtra(EXTRA_SHA1)
+        if (wanted != null && intent.data == null && roms.find(wanted) == null) {   // the PC plays it and the ROM is not here
+            sha1 = wanted; noRom = true
+            LinkClient.setView(wanted)
+            return
+        }
+        if (!Native.create()) return fail("Falha ao criar o core")
         val source = intent.data?.toString() ?: wanted?.let { roms.find(it)?.source } ?: return fail("Nenhuma ROM")
         val rc = try {
             openRom(source)!!.use { Native.loadRomFd(it.fd) }
@@ -119,8 +127,8 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         val st = LinkClient.state()
         val here = h in st.onPc
         menuPaused = true
-        Native.stop()
-        Native.setKeys(0); LinkClient.sendKeys(0)
+        if (!noRom) { Native.stop(); Native.setKeys(0) }
+        LinkClient.sendKeys(0)
         menuSheet.show(GameMenuLogic.items(st.status == LinkClient.CONNECTED, here, LinkClient.controlMode(this)))
     }
 
@@ -136,7 +144,7 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
     private fun resumeFromMenu() {
         if (!menuPaused) return
         menuPaused = false
-        if (sha1 != null && padHost?.editing != true) Native.start()
+        if (sha1 != null && !noRom && padHost?.editing != true) Native.start()
     }
 
     private fun refreshLink() {
@@ -145,10 +153,14 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         st.notices.lastOrNull()?.let { notice.say(it) }
         val here = h in st.onPc
         val connected = st.status == LinkClient.CONNECTED
+        if (noRom) {
+            if (roms.find(h) != null) { recreate(); return }   // the ROM arrived from the PC: load it normally
+            if (!here) { finish(); return }                    // the PC stopped playing it: nothing to show without a ROM
+        }
         val control = LinkClient.controlMode(this)
         val ts = st.onPcTs[h] ?: 0L
         if (here) {
-            onPcScreen.show(connected, ts, h in st.waiting, control)
+            onPcScreen.show(connected, ts, h in st.waiting, control, !noRom)
             if (control) onPcPill.show(connected, ts) else onPcPill.hide()
         } else { onPcScreen.hide(); onPcPill.hide() }
         padHost?.visibility = if (here && !control) View.GONE else View.VISIBLE   // the pad only drives the PC in control mode
@@ -255,7 +267,7 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         super.onResume()
         hideSystemBars()
         LinkClient.onForeground(this)
-        if (sha1 != null && padHost?.editing != true && !menuPaused) Native.start()
+        if (sha1 != null && !noRom && padHost?.editing != true && !menuPaused) Native.start()
         ui.post(poll)
     }
 
@@ -272,25 +284,28 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         super.onPause()
         ui.removeCallbacks(poll)
         LinkClient.onBackground()
-        Native.stop()
-        Native.setKeys(0)
+        if (!noRom) { Native.stop(); Native.setKeys(0) }
         LinkClient.sendKeys(0)   // release anything the PC may still hold
         // Through the sync engine: state + .sav, new version, atomic. Skipped (1) when nothing changed or the
         // game is being played on the PC (that copy is not ours to overwrite). Never crash on exit.
-        if (sha1 != null) Native.saveNow()
+        if (sha1 != null && !noRom) Native.saveNow()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        if (isFinishing) Native.destroy()
+        if (alive > 0) alive--
+        if (noRom) LinkClient.setView(null)
+        else if (isFinishing) Native.destroy()
     }
 
-    override fun surfaceCreated(holder: SurfaceHolder) { Native.setSurface(holder.surface) }
+    override fun surfaceCreated(holder: SurfaceHolder) { if (!noRom) Native.setSurface(holder.surface) }
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
-    override fun surfaceDestroyed(holder: SurfaceHolder) { Native.setSurface(null) }
+    override fun surfaceDestroyed(holder: SurfaceHolder) { if (!noRom) Native.setSurface(null) }
 
     companion object {
         const val EXTRA_SHA1 = "sha1"
+        /** Game screens alive (created, not destroyed): the auto-open from the PC must not cover one. Main thread only. */
+        @JvmStatic var alive = 0
         private const val GBA_W = 240; private const val GBA_H = 160
         private const val POLL_MS = 300L
     }

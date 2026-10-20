@@ -48,6 +48,7 @@ object LinkClient {
     @JvmStatic private external fun nativeResolve(sha: String, keepPhone: Boolean)
     @JvmStatic private external fun nativeFetch(sha: String)
     @JvmStatic private external fun nativeAckOpen(sha: String)
+    @JvmStatic private external fun nativeSetView(sha: String?)
     @JvmStatic private external fun nativePlayHere(): Int
     @JvmStatic private external fun nativePlace(sha: String, onPc: Boolean)
     @JvmStatic private external fun nativeSetPreferNewest(on: Boolean)
@@ -152,6 +153,8 @@ object LinkClient {
     fun resolve(sha1: String, keepPhone: Boolean) = nativeResolve(sha1, keepPhone)
     fun fetch(sha1: String) = nativeFetch(sha1)
     fun ackOpen(sha1: String) = nativeAckOpen(sha1)
+    /** A game screen without a core (no ROM here) is up for [sha1]: the controller mode works for it. null = closed. */
+    fun setView(sha1: String?) { if (roms != null) nativeSetView(sha1) }
 
     /** "Jogar aqui mesmo assim" (cable out): 0 = the game is back on the phone. */
     fun playHere(): Int = nativePlayHere()

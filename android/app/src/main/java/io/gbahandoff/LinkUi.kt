@@ -59,6 +59,8 @@ object OnPcText {
         val t = if (ts > 0) Fmt.dateTime(ts) else "?"
         return if (connected) "sincronizado $t" else "n\u00e3o sincronizado (\u00faltima c\u00f3pia $t)"
     }
+    /** Shown instead of "Jogar no celular" when the ROM of the game that is on the PC is not on this phone. */
+    const val NO_ROM = "Este jogo n\u00e3o est\u00e1 no celular"
     fun refusal(status: Int, pcProto: Int): String = when (status) {
         1 -> "O PC usa outra vers\u00e3o do protocolo (v$pcProto): atualize o app do PC e o do celular."
         2 -> "O emulador (mGBA) do PC \u00e9 diferente do deste celular: atualize o app do PC e o do celular."
@@ -67,8 +69,8 @@ object OnPcText {
 }
 
 /**
- * Full-screen "No PC" (black: the phone is not emulating and shows no game picture): the sync state, "Voltar
- * para o celular", the optional "Usar como controle" switch and, with the cable out, "Jogar aqui mesmo assim".
+ * Full-screen "No PC" (black: the phone is not emulating and shows no game picture): the sync state, "Jogar no
+ * celular" (only when the ROM is here), the optional "Usar como controle" switch and, with the cable out, "Jogar aqui mesmo assim".
  */
 class OnPcScreen(
     private val ctx: Context,
@@ -76,7 +78,7 @@ class OnPcScreen(
 ) : FrameLayout(ctx) {
     private val title = LinkUi.label(ctx, 15f)
     private val sub = LinkUi.label(ctx, 11f, 0xCCFFFFFF.toInt())
-    private val back = LinkUi.chip(ctx, "Voltar para o celular", onReturn)
+    private val back = LinkUi.chip(ctx, "Jogar no celular", onReturn)
     private val here = LinkUi.chip(ctx, "Jogar aqui mesmo assim", onPlayHere)
     private val ctl = android.widget.Switch(ctx).apply {
         text = "Usar como controle"; textSize = 12f; setTextColor(Color.WHITE)
@@ -97,14 +99,14 @@ class OnPcScreen(
         visibility = GONE
     }
 
-    fun show(connected: Boolean, ts: Long, waitingReturn: Boolean, control: Boolean) {
+    fun show(connected: Boolean, ts: Long, waitingReturn: Boolean, control: Boolean, romHere: Boolean = true) {
         visibility = VISIBLE
         getChildAt(0).visibility = VISIBLE
         title.text = if (connected) "No PC" else "O jogo continua no PC"
-        sub.text = if (waitingReturn) "Trazendo de volta..." else OnPcText.sync(connected, ts)
-        back.visibility = if (connected) VISIBLE else GONE
+        sub.text = if (waitingReturn) "Trazendo de volta..." else OnPcText.sync(connected, ts) + if (romHere) "" else "\n" + OnPcText.NO_ROM
+        back.visibility = if (connected && romHere) VISIBLE else GONE
         back.isEnabled = !waitingReturn; back.alpha = if (waitingReturn) 0.5f else 1f
-        here.visibility = if (connected) GONE else VISIBLE
+        here.visibility = if (connected || !romHere) GONE else VISIBLE
         ctl.visibility = if (connected) VISIBLE else GONE
         quiet = true; ctl.isChecked = control; quiet = false
     }

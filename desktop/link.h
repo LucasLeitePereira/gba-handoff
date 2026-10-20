@@ -7,7 +7,9 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -152,6 +154,9 @@ public:
 	bool can_install() const;            // state NoApp/Outdated, APK present, nothing running
 	void install();                      // UI thread: `adb install -r` + launch, on its own thread
 	void set_apk_path(const std::string &p) { apk_override_ = p; }   // test hook (--apk)
+	// Main thread, every frame: is the PC running a game (Hub::Mode::Playing)? Only then may the app be
+	// opened on a freshly plugged phone.
+	void set_pc_playing(bool on) { pc_playing_ = on; }
 
 private:
 	void thread_main();
@@ -161,6 +166,8 @@ private:
 	void sleep_ms(int ms);
 	void set_state(PhoneState s, const std::string &serial);
 	void set_message(const std::string &m);
+	void maybe_auto_open(const std::string &serial, PhoneState ps, std::map<std::string, uint64_t> &ready_since,
+	                     std::set<std::string> &done);
 
 	Status &st_;
 	uint16_t port_;
@@ -169,6 +176,7 @@ private:
 	std::atomic<bool> stop_{false};
 	std::atomic<bool> installing_{false};
 	std::atomic<bool> recheck_{false};
+	std::atomic<bool> pc_playing_{false};
 	mutable std::mutex pm_;
 	PhoneInfo info_;
 };

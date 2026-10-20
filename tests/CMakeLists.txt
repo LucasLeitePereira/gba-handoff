@@ -45,6 +45,12 @@ if(GBAH_BUILD_DESKTOP AND UNIX)
            COMMAND link_integration_test $<TARGET_FILE:gbahandoff> ${GBAH_TEST_ROM} ${GBAH_TEST_ROM_SHA1}
                    ${CMAKE_CURRENT_BINARY_DIR}/fake_adb.sh)
   set_tests_properties(link_integration_test PROPERTIES TIMEOUT 60)
+  add_executable(autoopen_test autoopen_test.c)
+  target_link_libraries(autoopen_test PRIVATE gbah_net gbah_core)
+  add_dependencies(autoopen_test gbahandoff)
+  add_test(NAME autoopen_test
+           COMMAND autoopen_test $<TARGET_FILE:gbahandoff> ${GBAH_TEST_ROM} ${CMAKE_CURRENT_BINARY_DIR}/fake_adb.sh)
+  set_tests_properties(autoopen_test PROPERTIES TIMEOUT 60)
   add_executable(handoff_e2e_test handoff_e2e_test.c)
   target_link_libraries(handoff_e2e_test PRIVATE gbah_net gbah_core gbah_sync)
   add_dependencies(handoff_e2e_test gbahandoff)

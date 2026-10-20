@@ -145,6 +145,9 @@ void phone_set_control(phone_link *p, int on);
  * change (coalesced) and re-sent every ~100 ms while any key is held. Ignored unless control mode is on
  * and the open game is the one the PC plays. Callable from any thread; only the link thread touches the socket. */
 void phone_cmd_input(phone_link *p, uint16_t keys);
+/* A game screen without a core (the ROM is not on this phone): lets the controller mode work for `sha1`
+ * (NULL = none). The UI sets it when it opens such a screen and clears it when it closes. */
+void phone_set_view(phone_link *p, const uint8_t sha1[20]);
 void phone_ack_open(phone_link *p, const uint8_t sha1[20]);        /* the UI handled an "O" record */
 
 /* ---- migration ------------------------------------------------------------------------
