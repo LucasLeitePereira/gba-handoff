@@ -102,7 +102,11 @@ int phone_save_now(phone_link *p);
 /* ---- UI ---------------------------------------------------------------------------------
  * phone_ui_text: a compact text snapshot, one record per line, fields separated by ' ':
  *   S <link 0..3> <peer name...>       link status (PL_ST_*), PC name (may be empty)
- *   H <sha1>                           this game was handed to the PC and is being played there
+ *   H <sha1> <ts_ms>                   this game is on the PC (handed over, not given back); ts = time of the
+ *                                      last copy stored here. With S != connected: "not synchronised"
+ *   Q <sha1> <waiting>                 conflict resolved: ask "continue on phone | PC" (waiting = PC asked)
+ *   D <mine> <pc>                      the "keep the newest" setting differs between phone and PC
+ *   X <status> <peer_proto>            S is REFUSED: GBAHP_ACK_* status and the PC's protocol version
  *   W <sha1>                           handing a game to the PC (waiting for its answer)
  *   P <0|1> <sha1|->                   the PC is playing a game
  *   O <sha1>                           the PC gave a game back that is not loaded: open it
@@ -124,9 +128,22 @@ void phone_cmd_return(phone_link *p);                              /* "Voltar pa
 void phone_cmd_handoff(phone_link *p);                             /* "Enviar ao PC": the open game */
 void phone_cmd_resolve(phone_link *p, const uint8_t sha1[20], int keep_phone);
 void phone_cmd_fetch(phone_link *p, const uint8_t sha1[20]);       /* bring the PC's version of a game */
+/* "Jogar aqui mesmo assim": the game on the PC (cable out) is resumed here from the last stored copy.
+ * Direct call (no session needed); refused (1) while connected. 0 = done. */
+int phone_cmd_play_here(phone_link *p);
+/* Answer to a Q record: on_pc=1 asks the PC to continue it, 0 continues on the phone. */
+void phone_cmd_place(phone_link *p, const uint8_t sha1[20], int on_pc);
+/* Setting "always keep the newest version". set_prefer_newest only configures (app start);
+ * settings_set is the user's choice of default for BOTH devices (sent to the PC); announce tells the PC
+ * the phone's current value (it compares and may ask to choose). */
+void phone_set_prefer_newest(phone_link *p, int on);
+void phone_cmd_settings_set(phone_link *p, int on);
+void phone_cmd_settings_announce(phone_link *p);
+/* Control mode (default off): only then the keys are sent to the PC. */
+void phone_set_control(phone_link *p, int on);
 /* Phone as the PC's controller (GBA KEYINPUT bits, GBAH_KEY_*): the latest keys, sent immediately on a
- * change (coalesced) and re-sent every ~100 ms while any key is held. Ignored unless the open game is
- * on the PC. Callable from any thread; only the link thread touches the socket. */
+ * change (coalesced) and re-sent every ~100 ms while any key is held. Ignored unless control mode is on
+ * and the open game is the one the PC plays. Callable from any thread; only the link thread touches the socket. */
 void phone_cmd_input(phone_link *p, uint16_t keys);
 void phone_ack_open(phone_link *p, const uint8_t sha1[20]);        /* the UI handled an "O" record */
 

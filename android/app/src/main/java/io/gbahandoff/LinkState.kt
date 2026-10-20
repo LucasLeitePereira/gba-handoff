@@ -19,6 +19,15 @@ data class LinkState(
     val peer: String = "",
     /** Games handed to the PC and being played there. */
     val onPc: Set<String> = emptySet(),
+    /** Time of the last copy stored here of each game on the PC (ms, 0 = unknown). */
+    val onPcTs: Map<String, Long> = emptyMap(),
+    /** "Continue on phone | PC" questions: sha1 -> true while the PC is being asked. */
+    val places: Map<String, Boolean> = emptyMap(),
+    /** The "keep the newest" setting differs: (this phone, the PC). Null when equal or unknown. */
+    val settingsDiff: Pair<Boolean, Boolean>? = null,
+    /** HELLO refusal (status = GBAHP_ACK_*: 1 protocol, 2 emulator core; the PC's protocol version). */
+    val refusalStatus: Int = 0,
+    val refusalProto: Int = 0,
     /** Handoff in progress (waiting for the PC's answer). */
     val waiting: Set<String> = emptySet(),
     val pcPlaying: String? = null,
@@ -36,7 +45,8 @@ data class LinkState(
         fun parse(text: String?): LinkState {
             if (text.isNullOrEmpty()) return LinkState()
             var st = LinkState()
-            val onPc = linkedSetOf<String>(); val waiting = linkedSetOf<String>()
+            val onPc = linkedSetOf<String>(); val onPcTs = linkedMapOf<String, Long>(); val places = linkedMapOf<String, Boolean>()
+            val waiting = linkedSetOf<String>()
             val rx = linkedMapOf<String, Int>(); val conf = ArrayList<Conflict>(); val notes = ArrayList<String>()
             for (line in text.split('\n')) {
                 if (line.length < 2) continue
@@ -47,7 +57,12 @@ data class LinkState(
                         val s = f.firstOrNull()?.toIntOrNull() ?: continue
                         st = st.copy(status = s, peer = rest.substringAfter(' ', ""))
                     }
-                    'H' -> if (isSha(rest)) onPc += rest
+                    'H' -> if (isSha(f[0])) { onPc += f[0]; onPcTs[f[0]] = f.getOrNull(1)?.toLongOrNull() ?: 0L }
+                    'Q' -> if (isSha(f[0])) places[f[0]] = f.getOrNull(1) == "1"
+                    'D' -> if (f.size >= 2 && (f[0] == "0" || f[0] == "1") && (f[1] == "0" || f[1] == "1"))
+                        st = st.copy(settingsDiff = Pair(f[0] == "1", f[1] == "1"))
+                    'X' -> { val a = f.getOrNull(0)?.toIntOrNull(); val b = f.getOrNull(1)?.toIntOrNull()
+                        if (a != null && b != null) st = st.copy(refusalStatus = a, refusalProto = b) }
                     'W' -> if (isSha(rest)) waiting += rest
                     'P' -> if (f.size >= 2 && f[0] == "1" && isSha(f[1])) st = st.copy(pcPlaying = f[1])
                     'O' -> if (isSha(rest)) st = st.copy(openRequest = rest)
@@ -61,7 +76,7 @@ data class LinkState(
                     'N' -> if (rest.isNotBlank()) notes += rest
                 }
             }
-            return st.copy(onPc = onPc, waiting = waiting, receiving = rx, conflicts = conf, notices = notes)
+            return st.copy(onPc = onPc, onPcTs = onPcTs, places = places, waiting = waiting, receiving = rx, conflicts = conf, notices = notes)
         }
     }
 }

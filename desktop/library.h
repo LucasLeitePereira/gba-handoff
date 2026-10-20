@@ -47,6 +47,15 @@ struct GameInfo {
 	bool conflict = false;   // diverges from the phone (set while connected)
 };
 
+// User settings of the PC, one `key=value` per line in <root>/settings.ini (unknown keys and bad
+// lines are ignored; a missing file means the defaults). The phone has its own copy of the same
+// settings; they are compared on every connection (see GBAHP_CTL_SETTINGS).
+struct Settings {
+	bool prefer_newest = false;   // resolve a version conflict by itself: the newest version wins
+};
+std::string settings_to_text(const Settings &s);
+Settings settings_from_text(const std::string &text);
+
 class Library {
 public:
 	// root empty = default (%APPDATA%/GBAHandoff or $XDG_DATA_HOME/gbahandoff). false = unusable dir.
@@ -54,6 +63,8 @@ public:
 	const std::string &root() const { return root_; }
 	const std::string &games_dir() const { return games_; }
 	const uint8_t *device_id() const { return dev_; }
+	Settings load_settings() const;                  // defaults if settings.ini is missing / unreadable
+	bool save_settings(const Settings &s) const;     // atomic (tmp + rename)
 
 	std::deque<GameInfo> &games() { return games_list_; }
 	GameInfo *find(const uint8_t sha1[20]);

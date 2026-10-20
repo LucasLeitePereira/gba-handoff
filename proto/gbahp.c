@@ -533,7 +533,7 @@ static void w_control(W *w, const void *mm)
 }
 size_t gbahp_encode_control(const gbahp_control *m, uint8_t *out, size_t cap)
 {
-	if (m && (m->cmd < GBAHP_CTL_RETURN || m->cmd > GBAHP_CTL_ROM_UNAVAILABLE)) return 0;
+	if (m && (m->cmd < GBAHP_CTL_RETURN || m->cmd > GBAHP_CTL_LAST)) return 0;
 	return encode(GBAHP_MSG_CONTROL, w_control, m, out, cap);
 }
 int gbahp_decode_control(const uint8_t *pl, size_t len, gbahp_control *m)
@@ -544,7 +544,7 @@ int gbahp_decode_control(const uint8_t *pl, size_t len, gbahp_control *m)
 	m->cmd = r_u8(&r);
 	r_copy(&r, m->sha1, 20);
 	m->arg = r_u32(&r);
-	if (!r.err && (m->cmd < GBAHP_CTL_RETURN || m->cmd > GBAHP_CTL_ROM_UNAVAILABLE)) return GBAHP_E_RANGE;
+	if (!r.err && (m->cmd < GBAHP_CTL_RETURN || m->cmd > GBAHP_CTL_LAST)) return GBAHP_E_RANGE;
 	return r_done(&r);
 }
 

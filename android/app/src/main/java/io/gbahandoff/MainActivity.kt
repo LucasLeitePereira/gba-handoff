@@ -24,6 +24,9 @@ class MainActivity : Activity() {
     private lateinit var list: LinearLayout
     private lateinit var notice: NoticeLine
     private lateinit var conflictPanel: ConflictPanel
+    private lateinit var choicePanel: ChoicePanel
+    private lateinit var settingsPanel: SettingsPanel
+    private var lastState = LinkState()
     private lateinit var roms: RomLibrary
     private val ui = Handler(Looper.getMainLooper())
     private var lastRows = ""
@@ -39,7 +42,12 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14f), dp(12f), dp(14f), dp(12f))
         }
-        col.addView(TextView(this).apply { text = getString(R.string.app_name); textSize = 20f })
+        val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        head.addView(TextView(this).apply { text = getString(R.string.app_name); textSize = 20f }, LinearLayout.LayoutParams(0, -2, 1f))
+        head.addView(LinkUi.chip(this, "\u2699 Configura\u00e7\u00f5es") { settingsPanel.show() }.apply {
+            setTextColor(Color.DKGRAY); background = null
+        })
+        col.addView(head)
         linkText = TextView(this).apply { textSize = 12f; setPadding(0, dp(2f), 0, dp(6f)) }
         col.addView(linkText)
         col.addView(Button(this).apply {
@@ -62,7 +70,16 @@ class MainActivity : Activity() {
         root.addView(notice, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(12f) })
         conflictPanel = ConflictPanel(this) { h, keepPhone -> LinkClient.resolve(h, keepPhone) }
         root.addView(conflictPanel, FrameLayout.LayoutParams(-1, -1))
+        choicePanel = ChoicePanel(this) { k, first -> LinkUi.answer(this, k, first); settingsPanel.refresh() }
+        root.addView(choicePanel, FrameLayout.LayoutParams(-1, -1))
+        settingsPanel = SettingsPanel(this) { }
+        root.addView(settingsPanel, FrameLayout.LayoutParams(-1, -1))
         setContentView(root)
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (settingsPanel.shown) settingsPanel.hide() else @Suppress("DEPRECATION") super.onBackPressed()
     }
 
     override fun onPause() {
@@ -80,9 +97,10 @@ class MainActivity : Activity() {
 
     private fun update() {
         val st = LinkClient.state()
+        lastState = st
         linkText.text = when (st.status) {
             LinkClient.CONNECTED -> "Conectado ao PC" + (st.peer.takeIf { it.isNotBlank() }?.let { ": $it" } ?: "")
-            LinkClient.REFUSED -> "PC recusou: versão do emulador incompatível"
+            LinkClient.REFUSED -> OnPcText.refusal(st.refusalStatus, st.refusalProto)
             else -> "Procurando o PC (cabo USB + adb)..."
         }
         st.notices.lastOrNull()?.let { notice.say(it) }
@@ -96,8 +114,10 @@ class MainActivity : Activity() {
         }
         val c = st.conflicts.firstOrNull()
         if (c != null) conflictPanel.show(c, roms.find(c.sha1)?.title?.ifBlank { null } ?: "jogo ${Fmt.shortSha(c.sha1)}") else conflictPanel.hide()
+        if (c != null) choicePanel.hide()
+        else LinkUi.updateChoice(choicePanel, st) { sha -> roms.find(sha)?.title?.ifBlank { null } ?: "jogo ${Fmt.shortSha(sha)}" }
         val games = GameList.build(roms.all(), filesDir.resolve("games"), st)
-        val key = games.joinToString("|") { "${it.sha1}:${it.title}:${it.progressMs}:${it.onPc}:${it.conflict}:${it.receivingPct}:${it.hasRom}" }
+        val key = games.joinToString("|") { "${it.sha1}:${it.title}:${it.progressMs}:${it.onPc}:${it.conflict}:${it.receivingPct}:${it.hasRom}:${st.status == LinkClient.CONNECTED}:${st.onPcTs[it.sha1]}" }
         if (key != lastRows) { lastRows = key; render(games) }
     }
 
@@ -114,7 +134,8 @@ class MainActivity : Activity() {
         val dp = { v: Float -> LinkUi.dp(this, v) }
         val state = when {
             g.conflict -> "conflito de versões"
-            g.onPc -> "jogando no PC (toque para voltar)"
+            g.onPc && lastState.status == LinkClient.CONNECTED -> "jogando no PC, " + OnPcText.sync(true, lastState.onPcTs[g.sha1] ?: 0L) + " (toque para voltar)"
+            g.onPc -> "no PC, " + OnPcText.sync(false, lastState.onPcTs[g.sha1] ?: 0L) + " (toque para jogar aqui)"
             g.receivingPct != null -> "recebendo a ROM do PC ${g.receivingPct}%"
             !g.hasRom -> "sem a ROM neste celular"
             g.progressMs > 0 -> "salvo " + Fmt.dateTime(g.progressMs)
@@ -132,8 +153,22 @@ class MainActivity : Activity() {
             isEnabled = usable
             alpha = if (usable || g.onPc) 1f else 0.6f
             setOnClickListener { if (usable) startActivity(Intent(this@MainActivity, GameActivity::class.java).putExtra(GameActivity.EXTRA_SHA1, g.sha1)) }
-            if (g.onPc) setOnClickListener { LinkClient.doReturn() }
+            if (g.onPc) setOnClickListener {
+                if (lastState.status == LinkClient.CONNECTED) LinkClient.doReturn() else confirmPlayHere(g.sha1)
+            }
         }
+    }
+
+    /** Cable out and the game is on the PC: playing here makes a second version of it. Say so first. */
+    private fun confirmPlayHere(sha: String) {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Jogar aqui mesmo assim?")
+            .setMessage("O PC continua com a vers\u00e3o dele. Se os dois avan\u00e7arem, na pr\u00f3xima conex\u00e3o voc\u00ea escolhe qual manter (a outra vira backup).\n\nO jogo ser\u00e1 carregado da \u00faltima c\u00f3pia sincronizada.")
+            .setPositiveButton("Jogar aqui") { _, _ ->
+                if (LinkClient.playHere() == 0) startActivity(Intent(this, GameActivity::class.java).putExtra(GameActivity.EXTRA_SHA1, sha))
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
     }
 
     @Deprecated("Deprecated in Java")

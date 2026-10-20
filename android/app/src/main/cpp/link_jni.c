@@ -178,6 +178,19 @@ J(jbyteArray, nativeConflictThumb)(JNIEnv *env, jclass cls, jstring sha, jboolea
 
 J(void, nativeReturn)(JNIEnv *env, jclass cls) { (void)env; (void)cls; if (g_link) phone_cmd_return(g_link); }
 J(void, nativeSendKeys)(JNIEnv *env, jclass cls, jint keys) { (void)env; (void)cls; if (g_link) phone_cmd_input(g_link, (uint16_t)(keys & 0x3FF)); }
+J(jint, nativePlayHere)(JNIEnv *env, jclass cls) { (void)env; (void)cls; return g_link ? phone_cmd_play_here(g_link) : 1; }
+J(void, nativeSetPreferNewest)(JNIEnv *env, jclass cls, jboolean on) { (void)env; (void)cls; if (g_link) phone_set_prefer_newest(g_link, on ? 1 : 0); }
+J(void, nativeSettingsSet)(JNIEnv *env, jclass cls, jboolean on) { (void)env; (void)cls; if (g_link) phone_cmd_settings_set(g_link, on ? 1 : 0); }
+J(void, nativeSettingsAnnounce)(JNIEnv *env, jclass cls) { (void)env; (void)cls; if (g_link) phone_cmd_settings_announce(g_link); }
+J(void, nativeSetControl)(JNIEnv *env, jclass cls, jboolean on) { (void)env; (void)cls; if (g_link) phone_set_control(g_link, on ? 1 : 0); }
+
+J(void, nativePlace)(JNIEnv *env, jclass cls, jstring sha, jboolean onPc)
+{
+	uint8_t id[20];
+	(void)cls;
+	if (g_link && sha_from_jstring(env, sha, id) == 0) phone_cmd_place(g_link, id, onPc ? 1 : 0);
+}
+
 J(void, nativeHandoff)(JNIEnv *env, jclass cls) { (void)env; (void)cls; if (g_link) phone_cmd_handoff(g_link); }
 
 J(void, nativeResolve)(JNIEnv *env, jclass cls, jstring sha, jboolean keepPhone)

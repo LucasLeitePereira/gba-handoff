@@ -135,7 +135,7 @@ void draw_menu(SDL_Renderer *ren, cable::Library &lib, cable::Hub &hub, cable::S
 	SDL_RenderClear(ren);
 	text(ren, 8, 8, "GBA Handoff", 255, 255, 255);
 	text(ren, 8, 20, "setas: escolher   Enter: jogar   Esc: sair   arraste um .gba aqui para importar", 140, 140, 160);
-	const int rows = 22;
+	const int rows = 17;
 	auto &games = lib.games();
 	if (games.empty()) {
 		text(ren, 16, 48, "Biblioteca vazia.");
@@ -155,13 +155,33 @@ void draw_menu(SDL_Renderer *ren, cable::Library &lib, cable::Hub &hub, cable::S
 		}
 		text(ren, 8, 39 + i * 9.f, line, g.conflict ? 255 : 220, g.conflict ? 120 : 220, g.conflict ? 120 : 220);
 	}
+	// settings row (always visible, selected when sel == number of games)
+	{
+		const bool s = sel == (int)games.size();
+		if (s) {
+			SDL_SetRenderDrawColor(ren, 40, 60, 110, 255);
+			SDL_FRect f{6, 191, kMenuW - 12.f, 10};
+			SDL_RenderFillRect(ren, &f);
+		}
+		text(ren, 8, 192, std::string(s ? "> " : "  ") + "Sempre manter a versao mais recente: " +
+		     (hub.settings().prefer_newest ? "SIM" : "NAO") + (s ? "  (Enter alterna)" : ""), 220, 220, 150);
+	}
+	if (hub.pending_text().size()) text(ren, 8, kMenuH - 46, hub.pending_text(), 255, 200, 100);
+	bool return_refusal_drawn = false;
 	// status
 	box(ren, 0, kMenuH - 36, kMenuW, 36, 255);
 	if (!link_on) text(ren, 8, kMenuH - 32, "Cabo desativado (--no-link)", 200, 200, 120);
 	else if (st.port_busy()) text(ren, 8, kMenuH - 32, "PORTA OCUPADA: outra instancia ja esta aberta", 255, 100, 100);
 	else if (st.connected()) text(ren, 8, kMenuH - 32, "Conectado: " + st.device(), 120, 230, 120);
+	else if (!st.refusal().empty()) {
+		// refusal (version mismatch): wrap in 48-char lines, red
+		std::string r = st.refusal();
+		for (size_t i = 0, y = 0; i < r.size() && y < 3; i += 48, y++)
+			text(ren, 8, kMenuH - 32 + (float)y * 11, r.substr(i, 48), 255, 100, 100);
+		return_refusal_drawn = true;
+	}
 	else text(ren, 8, kMenuH - 32, "Sem celular", 200, 200, 200);
-	if (link_on) text(ren, 8, kMenuH - 22, st.note(), 150, 150, 170);
+	if (link_on && !return_refusal_drawn) text(ren, 8, kMenuH - 22, st.note(), 150, 150, 170);
 	if (hub.osd_active()) text(ren, 8, kMenuH - 11, hub.osd(), 255, 230, 120);
 }
 
@@ -171,7 +191,10 @@ void draw_game_overlay(SDL_Renderer *ren, cable::Hub &hub, cable::Status &st)
 	if (!mt.empty()) {
 		box(ren, 0, 56, GBAH_WIDTH, 48, 200);
 		text(ren, (GBAH_WIDTH - (float)mt.size() * 8) / 2, 64, mt, 255, 255, 255);
-		if (hub.mode() == cable::Hub::Mode::WaitPhone) {
+		if (hub.mode() == cable::Hub::Mode::AwaitPlace) {
+			text(ren, 8, 80, st.connected() ? "Escolha no celular onde continuar" : "Enter: continuar aqui", 200, 200, 200);
+			text(ren, 8, 90, "Esc: menu", 160, 160, 160);
+		} else if (hub.mode() == cable::Hub::Mode::WaitPhone) {
 			text(ren, 8, 80, st.connected() ? "Devolva o jogo pelo celular" : "Enter: continuar aqui", 200, 200, 200);
 			text(ren, 8, 90, "Esc: menu", 160, 160, 160);
 		} else if (hub.mode() == cable::Hub::Mode::Conflict) {
@@ -321,10 +344,16 @@ int main(int argc, char **argv)
 					}
 				break;
 			case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
-				if (in_menu && n_games) {
-					if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_UP) sel = (sel + n_games - 1) % n_games;
-					else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN) sel = (sel + 1) % n_games;
-					else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST) hub.open_game(lib.games()[(size_t)sel].sha1);
+				if (in_menu) {
+					const int rows = n_games + 1;   // + the settings row
+					if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_UP) sel = (sel + rows - 1) % rows;
+					else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN) sel = (sel + 1) % rows;
+					else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST) {
+						if (sel == n_games) hub.set_prefer_newest(!hub.settings().prefer_newest);
+						else if (sel < n_games) hub.open_game(lib.games()[(size_t)sel].sha1);
+					}
+				} else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST && hub.mode() != cable::Hub::Mode::Playing) {
+					hub.resume_local();
 				}
 				break;
 			case SDL_EVENT_KEY_DOWN: {
@@ -334,9 +363,12 @@ int main(int argc, char **argv)
 					SDL_SetWindowFullscreen(win, !(SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN));
 				} else if (in_menu) {
 					if (k == SDL_SCANCODE_ESCAPE) running = false;
-					else if (n_games && k == SDL_SCANCODE_UP) sel = (sel + n_games - 1) % n_games;
-					else if (n_games && k == SDL_SCANCODE_DOWN) sel = (sel + 1) % n_games;
-					else if (n_games && (k == SDL_SCANCODE_RETURN || k == SDL_SCANCODE_KP_ENTER)) hub.open_game(lib.games()[(size_t)sel].sha1);
+					else if (k == SDL_SCANCODE_UP) sel = (sel + n_games) % (n_games + 1);
+					else if (k == SDL_SCANCODE_DOWN) sel = (sel + 1) % (n_games + 1);
+					else if (k == SDL_SCANCODE_RETURN || k == SDL_SCANCODE_KP_ENTER) {
+						if (sel == n_games) hub.set_prefer_newest(!hub.settings().prefer_newest);
+						else if (sel < n_games) hub.open_game(lib.games()[(size_t)sel].sha1);
+					}
 				} else if (k == SDL_SCANCODE_ESCAPE) {
 					hub.close_game();
 				} else if (k == SDL_SCANCODE_F2) {
@@ -345,7 +377,8 @@ int main(int argc, char **argv)
 					hub.quick_save();
 				} else if (k == SDL_SCANCODE_F8) {
 					hub.quick_load();
-				} else if (k == SDL_SCANCODE_RETURN && hub.mode() == cable::Hub::Mode::WaitPhone) {
+				} else if ((k == SDL_SCANCODE_RETURN || k == SDL_SCANCODE_KP_ENTER) &&
+				           (hub.mode() == cable::Hub::Mode::WaitPhone || hub.mode() == cable::Hub::Mode::AwaitPlace)) {
 					hub.resume_local();
 				}
 				break;
@@ -353,9 +386,9 @@ int main(int argc, char **argv)
 			default: break;
 			}
 		}
-		if (n_games) { if (sel >= n_games) sel = n_games - 1; } else sel = 0;
+		if (sel > n_games) sel = n_games;   // n_games itself is the settings row
 		if (sel < top) top = sel;
-		if (sel >= top + 22) top = sel - 21;
+		if (sel >= top + 17) top = sel - 16;
 
 		hub.tick();
 		if (hub.take_audio_flush() && audio) SDL_ClearAudioStream(audio);

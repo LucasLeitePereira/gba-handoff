@@ -29,7 +29,9 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
     private var curW = 0
     private var curH = 0
     private lateinit var roms: RomLibrary
-    private lateinit var onPcOverlay: OnPcOverlay
+    private lateinit var onPcScreen: OnPcScreen
+    private lateinit var onPcPill: OnPcPill
+    private lateinit var choicePanel: ChoicePanel
     private lateinit var conflictPanel: ConflictPanel
     private lateinit var notice: NoticeLine
     private lateinit var sendBtn: View
@@ -44,6 +46,9 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         surface = SurfaceView(this)
         surface.holder.addCallback(this)
         root.addView(surface, FrameLayout.LayoutParams(GBA_W, GBA_H, Gravity.TOP or Gravity.CENTER_HORIZONTAL))
+        // black cover above the surface (which keeps the last frame): the game picture is never shown while the game is on the PC
+        onPcScreen = OnPcScreen(this, { LinkClient.doReturn() }, { confirmPlayHere() }) { on -> LinkClient.setControlMode(this, on); refreshLink() }
+        root.addView(onPcScreen, FrameLayout.LayoutParams(-1, -1))
         padHost = PadHost(this, { Native.setKeys(it); LinkClient.sendKeys(it) }) { editing ->   // pad layout editor: pause while editing
             if (editing) Native.stop() else if (sha1 != null) Native.start()
         }
@@ -55,8 +60,10 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         root.addView(sendBtn, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START))
         notice = NoticeLine(this)
         root.addView(notice, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(6f) })
-        onPcOverlay = OnPcOverlay(this) { LinkClient.doReturn() }
-        root.addView(onPcOverlay, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START))
+        onPcPill = OnPcPill(this) { LinkClient.setControlMode(this, false); refreshLink() }
+        root.addView(onPcPill, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START))
+        choicePanel = ChoicePanel(this) { k, first -> LinkUi.answer(this, k, first) }
+        root.addView(choicePanel, FrameLayout.LayoutParams(-1, -1))
         conflictPanel = ConflictPanel(this) { h, keepPhone -> LinkClient.resolve(h, keepPhone) }
         root.addView(conflictPanel, FrameLayout.LayoutParams(-1, -1))
         root.addOnLayoutChangeListener { _, l, t, r, b, _, _, _, _ -> layoutScreen(r - l, b - t) }
@@ -100,11 +107,33 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         val st = LinkClient.state()
         st.notices.lastOrNull()?.let { notice.say(it) }
         val here = h in st.onPc
-        if (here) onPcOverlay.show(h in st.waiting) else onPcOverlay.hide()
-        sendBtn.visibility = if (st.status == LinkClient.CONNECTED && !here && h !in st.waiting && !conflictPanel.shown) View.VISIBLE else View.GONE
+        val connected = st.status == LinkClient.CONNECTED
+        val control = LinkClient.controlMode(this)
+        val ts = st.onPcTs[h] ?: 0L
+        if (here) {
+            onPcScreen.show(connected, ts, h in st.waiting, control)
+            if (control) onPcPill.show(connected, ts) else onPcPill.hide()
+        } else { onPcScreen.hide(); onPcPill.hide() }
+        padHost?.visibility = if (here && !control) View.GONE else View.VISIBLE   // the pad only drives the PC in control mode
+        onPcScreen.visibility = if (here) View.VISIBLE else View.GONE
+        // the cover is part of the screen: in control mode only the pad (and the pill) stay on the black
+        if (here && control) onPcScreen.hideCard()
+        sendBtn.visibility = if (connected && !here && h !in st.waiting && !conflictPanel.shown && !choicePanel.shown) View.VISIBLE else View.GONE
         placeFloating()
         val c = st.conflicts.firstOrNull()
         if (c != null) conflictPanel.show(c, roms.find(c.sha1)?.title?.ifBlank { null } ?: "jogo ${Fmt.shortSha(c.sha1)}") else conflictPanel.hide()
+        if (c != null) choicePanel.hide()
+        else LinkUi.updateChoice(choicePanel, st) { sha -> roms.find(sha)?.title?.ifBlank { null } ?: "jogo ${Fmt.shortSha(sha)}" }
+    }
+
+    /** Cable out and the game is on the PC: playing here makes a second version of it. Say so first. */
+    private fun confirmPlayHere() {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Jogar aqui mesmo assim?")
+            .setMessage("O PC continua com a vers\u00e3o dele. Se os dois avan\u00e7arem, na pr\u00f3xima conex\u00e3o voc\u00ea escolhe qual manter (a outra vira backup).\n\nO jogo ser\u00e1 carregado da \u00faltima c\u00f3pia sincronizada.")
+            .setPositiveButton("Jogar aqui") { _, _ -> if (LinkClient.playHere() == 0) refreshLink() }
+            .setNegativeButton("Cancelar", null)
+            .show()
     }
 
     private fun fail(msg: String) {
@@ -140,7 +169,7 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         val blocked = ArrayList<FloatArray>()
         padHost?.occupiedRects(blocked)
         val m = LinkUi.dp(this, 4f).toFloat()
-        place(onPcOverlay, area, blocked, m, Placement.PREFER_TOP_LEFT)
+        place(onPcPill, area, blocked, m, Placement.PREFER_TOP_LEFT)
         place(sendBtn, area, blocked, m, Placement.PREFER_TOP_RIGHT)
     }
 

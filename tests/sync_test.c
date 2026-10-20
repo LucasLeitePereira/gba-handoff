@@ -279,6 +279,30 @@ static void test_fs_helpers(const char *root)
 	CHECK(gbah_fs_read_prefix(p, buf, 4, &got) != 0);
 }
 
+/* "Keep the most recent": the newest timestamp wins, ties fall to the counter and then the device id,
+ * and the order is symmetric. Negative control: the naive 'counter only' rule picks the wrong side. */
+static void test_newest(void)
+{
+	gbah_meta a = empty(), b = empty(), none = empty();
+	a.has_data = b.has_data = 1;
+	a.version = ver(P, 5); b.version = ver(C, 3);
+	a.timestamp_ms = 2000; b.timestamp_ms = 1000;
+	CHECK(gbah_sync_newest(&a, &b) == 1 && gbah_sync_newest(&b, &a) == -1);
+	/* the PC has the SMALLER counter but the newer time: time decides (counter-only would pick the phone) */
+	a.timestamp_ms = 1000; b.timestamp_ms = 2000;
+	CHECK(gbah_sync_newest(&a, &b) == -1 && gbah_sync_newest(&b, &a) == 1);
+	CHECK(naive_decide(&a, &b) == GBAH_SYNC_SEND);                 /* negative control: it would have picked a */
+	/* tie on time: the higher counter, then the device id */
+	a.timestamp_ms = b.timestamp_ms = 1500;
+	CHECK(gbah_sync_newest(&a, &b) == 1 && gbah_sync_newest(&b, &a) == -1);
+	b.version = ver(C, 5);
+	CHECK(gbah_sync_newest(&a, &b) == -1 && gbah_sync_newest(&b, &a) == 1);   /* 0xAA < 0xCC */
+	a.version = ver(C, 5);
+	CHECK(gbah_sync_newest(&a, &b) == 0 && gbah_sync_newest(&b, &a) == 0);     /* the very same version */
+	/* a side without data never wins */
+	CHECK(gbah_sync_newest(&a, &none) == 1 && gbah_sync_newest(&none, &a) == -1);
+}
+
 int main(void)
 {
 	char root[] = "/tmp/gbah_sync_XXXXXX", cmd[300];
@@ -288,6 +312,7 @@ int main(void)
 	test_negative_controls();
 	test_mirror();
 	test_meta_codec();
+	test_newest();
 	if (!mkdtemp(root)) { perror("mkdtemp"); return 2; }
 	test_store(root);
 	test_fs_helpers(root);

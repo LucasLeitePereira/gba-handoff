@@ -5,7 +5,8 @@
  *     state, loaded in a fresh core, reproduces the frame hashes of an independent reference
  *     (determinism end to end, with negative controls), PC stops mirroring while waiting.
  *  B  conflict while the PC plays: PC pauses (no mirrors), sends THUMB, refuses a HANDOFF with
- *     CONFLICT; the phone picks the PC version (CONTROL FETCH -> RESOLVED push) and the PC resumes.
+ *     CONFLICT; the phone picks the PC version (CONTROL FETCH -> RESOLVED push); the PC STAYS paused
+ *     ("AwaitPlace", one owner) until PLACE_PC, then mirrors again.
  *  C  conflict with the PC idle: the phone picks its own version (RESOLVED push); the loser becomes
  *     a backup; only the 3 newest backups are kept.
  *  D  cable pulled while the PC plays: it keeps running, versions advance from the synced base;
@@ -13,6 +14,9 @@
  *  E  PC asks for pushes to a phone without the ROM: ACK NO_ROM -> ROM_PUSH -> push again; and the
  *     "the .sav changed" trigger sends a MIRROR without waiting for the period.
  *  F  second instance on the same port reports PORT_BUSY.
+ *  G  one owner: INPUT incl. L/R reaches the PC; after a conflict key state is cleared; PLACE_PC runs the PC.
+ *  H  one owner: PLACE_PHONE keeps the PC paused; cable lost in AwaitPlace does not make the PC play alone.
+ *  I  settings: the PC announces them, SETTINGS_SET persists (also after a restart).
  * POSIX only (fork/exec); the Windows build is cross-compiled and not run here. */
 #include "gbah_core.h"
 #include "gbah_sync.h"
@@ -414,6 +418,78 @@ static void store_meta(const char *data, gbah_meta *m)
 	gbah_store_meta(games, g_sha, dev, m, NULL, NULL);
 }
 
+/* STATE_PUSHes seen in `ms` (MIRROR ones are answered like the phone would) */
+static int pushes_within(Phone *ph, int ms)
+{
+	uint64_t end = mono_ms() + (uint64_t)ms;
+	int n = 0;
+	while (mono_ms() < end) {
+		Msg x;
+		int r = next_msg(ph, &x, 200);
+		if (r < 0) break;
+		if (r == 1) {
+			if (x.type == GBAHP_MSG_STATE_PUSH) { n++; phone_handle_mirror(ph, &x); }
+			msg_free(&x);
+		}
+	}
+	return n;
+}
+
+static void send_input(Phone *ph, uint16_t keys)
+{
+	static uint32_t seq;
+	gbahp_input in;
+	uint8_t out[64];
+	in.seq = ++seq; in.keys = keys;
+	send_frame(ph, out, gbahp_encode_input(&in, out, sizeof out));
+}
+
+/* waits for a MIRROR whose SRAM bytes [1],[2] (keys low/high written by the test ROM every frame) match */
+static int wait_keys_in_mirror(Phone *ph, uint8_t lo, uint8_t hi, int timeout_ms)
+{
+	uint64_t end = mono_ms() + (uint64_t)timeout_ms;
+	while (mono_ms() < end) {
+		Msg m;
+		gbahp_state_push sp;
+		if (!wait_push_flag(ph, GBAHP_PUSH_MIRROR, &m, (int)(end - mono_ms()))) return 0;
+		if (gbahp_decode_state_push(m.p, m.len, &sp) == 0 && sp.sav_len > 2 && sp.sav[1] == lo && sp.sav[2] == hi) {
+			phone_handle_mirror(ph, &m);
+			msg_free(&m);
+			return 1;
+		}
+		phone_handle_mirror(ph, &m);
+		msg_free(&m);
+	}
+	return 0;
+}
+
+/* The phone reports a version the PC does not descend from (CONFLICT), picks the PC's (FETCH) and acks the
+ * RESOLVED push. The PC must be playing the game. Returns 0 on success, *frame = the resolved frame. */
+static int conflict_fetch_pc(Phone *ph, uint32_t *frame)
+{
+	Msg m;
+	gbahp_state_push sp;
+	gbah_ver v;
+	memset(&ph->meta, 0, sizeof ph->meta);
+	memcpy(ph->meta.sha1, g_sha, 20);
+	ph->meta.has_data = 1;
+	memcpy(ph->meta.version.dev, ph->dev, 16); ph->meta.version.counter = 90;
+	memcpy(ph->meta.base.dev, ph->dev, 16); ph->meta.base.counter = 1;
+	ph->meta.timestamp_ms = gbah_now_ms(); ph->meta.frame = 4242;
+	send_library(ph, &ph->meta, g_rom_len);
+	if (!wait_type(ph, GBAHP_MSG_THUMB, &m, 5000)) return -1;
+	msg_free(&m);
+	send_control(ph, GBAHP_CTL_FETCH, g_sha, 0);
+	if (!wait_push_flag(ph, GBAHP_PUSH_RESOLVED, &m, 5000)) return -2;
+	if (gbahp_decode_state_push(m.p, m.len, &sp) != 0) { msg_free(&m); return -3; }
+	*frame = sp.frame;
+	memcpy(v.dev, sp.origin_device, 16); v.counter = sp.version;
+	send_ack(ph, g_sha, &v, GBAHP_STATE_ACK_OK);
+	ph->meta.version = v; ph->meta.base = v;
+	msg_free(&m);
+	return 0;
+}
+
 /* ------------------------------------------------------------------ scenario A */
 
 static uint8_t g_pc_dev[16];   /* learnt in A from the first push */
@@ -662,13 +738,19 @@ static void scenario_b(const char *data)
 		ph.meta.version = v; ph.meta.base = v;
 	}
 	msg_free(&m);
-	/* resumed: mirrors flow again, with newer frames */
+	/* ONE OWNER: after the resolution the PC does NOT resume by itself ("AwaitPlace"): no mirror for 3.2 s
+	 * (period 1.5 s). The control that this silence is the pause, and not a dead mirror, is the next step. */
+	CHECK(pushes_within(&ph, 3200) == 0);
+	CHECK(log_has(&pc, "Playing -> Conflict") && log_has(&pc, "Conflict -> AwaitPlace"));
+	CHECK(!log_has(&pc, "Conflict -> Playing"));
+	/* the phone chose the PC: now (and only now) the PC runs and mirrors, with newer frames */
+	send_control(&ph, GBAHP_CTL_PLACE_PC, g_sha, 0);
 	REQUIRE(wait_push_flag(&ph, GBAHP_PUSH_MIRROR, &m, 8000));
 	REQUIRE(gbahp_decode_state_push(m.p, m.len, &sp) == 0);
 	CHECK(sp.frame > frame_resolved);
 	phone_handle_mirror(&ph, &m);
 	msg_free(&m);
-	CHECK(log_has(&pc, "Conflito resolvido"));
+	CHECK(log_has(&pc, "Versao do PC mantida"));
 	phone_close(&ph);
 	CHECK(pc_stop(&pc) == 0);
 	l = slurp(pc.log);
@@ -875,6 +957,181 @@ static void scenario_e(const char *data)
 	free(l);
 }
 
+/* ------------------------------------------------------------------ scenario G (keys, one owner) */
+
+static void scenario_g(const char *data)
+{
+	Pc pc;
+	Phone ph;
+	Msg m;
+	uint16_t port = free_port();
+	const char *extra[] = { "--mirror-ms", "700", "--sav-min-ms", "600000", NULL, NULL };
+	uint32_t frame_resolved = 0;
+	char *l;
+
+	extra[4] = g_rom;
+	phone_reset(&ph, 0x7C);
+	REQUIRE(pc_start(&pc, "g", data, port, extra) == 0);   /* plays the stored game */
+	REQUIRE(phone_connect(&ph, port, gbah_core_version()) == 0);
+	REQUIRE(wait_type(&ph, GBAHP_MSG_LIBRARY, &m, 5000));
+	msg_free(&m);
+	send_library(&ph, NULL, 0);
+	/* CONTROL: with no key pressed the test ROM reports 0/0 in SRAM[1..2] */
+	CHECK(wait_keys_in_mirror(&ph, 0x00, 0x00, 8000));
+	/* the phone presses A + L + R (bits 0, 8, 9): they reach the PC (L/R too) */
+	send_input(&ph, 0x301);
+	CHECK(wait_keys_in_mirror(&ph, 0x01, 0x03, 8000));
+	/* conflict while the key is still "held": the PC pauses and forgets the phone's keys */
+	REQUIRE(conflict_fetch_pc(&ph, &frame_resolved) == 0);
+	CHECK(pushes_within(&ph, 1800) == 0);
+	CHECK(log_has(&pc, "Conflict -> AwaitPlace"));
+	/* the phone chooses the PC: it runs again from the stored version; the stale key must be gone */
+	send_control(&ph, GBAHP_CTL_PLACE_PC, g_sha, 0);
+	CHECK(wait_keys_in_mirror(&ph, 0x00, 0x00, 8000));
+	/* and the measurement can see keys again when they ARE pressed (the check above is not vacuous) */
+	send_input(&ph, 0x201);
+	CHECK(wait_keys_in_mirror(&ph, 0x01, 0x02, 8000));
+	send_input(&ph, 0);
+	CHECK(wait_keys_in_mirror(&ph, 0x00, 0x00, 8000));
+	phone_close(&ph);
+	CHECK(pc_stop(&pc) == 0);
+	l = slurp(pc.log);
+	if (failures) fprintf(stderr, "--- G: desktop log ---\n%s", l);
+	free(l);
+}
+
+/* ------------------------------------------------------------------ scenario H (PLACE_PHONE, cable lost while paused) */
+
+static void scenario_h(const char *data)
+{
+	Pc pc;
+	Phone ph;
+	Msg m;
+	uint16_t port = free_port();
+	const char *extra[] = { "--mirror-ms", "700", "--sav-min-ms", "600000", NULL, NULL };
+	uint32_t frame_resolved = 0;
+	char *l;
+
+	extra[4] = g_rom;
+	/* 1: PLACE_PHONE -> the PC keeps paused on the game ("Jogando no celular") */
+	phone_reset(&ph, 0x7D);
+	REQUIRE(pc_start(&pc, "h1", data, port, extra) == 0);
+	REQUIRE(phone_connect(&ph, port, gbah_core_version()) == 0);
+	REQUIRE(wait_type(&ph, GBAHP_MSG_LIBRARY, &m, 5000));
+	msg_free(&m);
+	send_library(&ph, NULL, 0);
+	REQUIRE(wait_push_flag(&ph, GBAHP_PUSH_MIRROR, &m, 8000));   /* it plays and mirrors (control) */
+	phone_handle_mirror(&ph, &m);
+	msg_free(&m);
+	REQUIRE(conflict_fetch_pc(&ph, &frame_resolved) == 0);
+	send_control(&ph, GBAHP_CTL_PLACE_PHONE, g_sha, 0);
+	CHECK(pushes_within(&ph, 2500) == 0);
+	CHECK(log_has(&pc, "AwaitPlace -> WaitPhone"));
+	CHECK(!log_has(&pc, "AwaitPlace -> Playing") && !log_has(&pc, "AwaitPlace -> Menu"));
+	phone_close(&ph);
+	CHECK(pc_stop(&pc) == 0);
+	l = slurp(pc.log);
+	if (failures) fprintf(stderr, "--- H1: desktop log ---\n%s", l);
+	free(l);
+	kill_all_pcs();
+
+	/* 2: the cable is lost while the PC waits for the answer: it must NOT start playing alone */
+	port = free_port();
+	phone_reset(&ph, 0x7E);
+	REQUIRE(pc_start(&pc, "h2", data, port, extra) == 0);
+	REQUIRE(phone_connect(&ph, port, gbah_core_version()) == 0);
+	REQUIRE(wait_type(&ph, GBAHP_MSG_LIBRARY, &m, 5000));
+	msg_free(&m);
+	send_library(&ph, NULL, 0);
+	REQUIRE(wait_push_flag(&ph, GBAHP_PUSH_MIRROR, &m, 8000));
+	phone_handle_mirror(&ph, &m);
+	msg_free(&m);
+	REQUIRE(conflict_fetch_pc(&ph, &frame_resolved) == 0);
+	usleep(300000);
+	CHECK(log_has(&pc, "Conflict -> AwaitPlace"));
+	gbahp_net_shutdown(ph.c.s);
+	gbahp_conn_close(&ph.c);
+	usleep(2000000);
+	CHECK(pc_alive(&pc));
+	CHECK(log_has(&pc, "Cabo desconectado"));
+	CHECK(!log_has(&pc, "AwaitPlace -> Playing") && !log_has(&pc, "AwaitPlace -> Menu"));   /* still paused on the game */
+	CHECK(pc_stop(&pc) == 0);
+	l = slurp(pc.log);
+	if (failures) fprintf(stderr, "--- H2: desktop log ---\n%s", l);
+	free(l);
+}
+
+/* ------------------------------------------------------------------ scenario I (settings) */
+
+static int wait_settings(Phone *ph, uint32_t *bits, int timeout_ms)
+{
+	uint64_t end = mono_ms() + (uint64_t)timeout_ms;
+	while (mono_ms() < end) {
+		Msg m;
+		gbahp_control c;
+		if (!wait_type(ph, GBAHP_MSG_CONTROL, &m, (int)(end - mono_ms()))) return 0;
+		if (gbahp_decode_control(m.p, m.len, &c) == 0 && c.cmd == GBAHP_CTL_SETTINGS) { *bits = c.arg; msg_free(&m); return 1; }
+		msg_free(&m);
+	}
+	return 0;
+}
+
+static void scenario_i(const char *data)
+{
+	Pc pc;
+	Phone ph;
+	uint16_t port = free_port();
+	const char *extra[] = { NULL };
+	uint32_t bits = 99;
+	char ini[400];
+	char *l;
+
+	snprintf(ini, sizeof ini, "%s/settings.ini", data);
+	phone_reset(&ph, 0x7F);
+	CHECK(!file_exists(ini));
+	REQUIRE(pc_start(&pc, "i1", data, port, extra) == 0);
+	REQUIRE(phone_connect(&ph, port, gbah_core_version()) == 0);
+	REQUIRE(wait_settings(&ph, &bits, 5000));
+	CHECK(bits == 0);                                              /* default: ask on conflict */
+	send_control(&ph, GBAHP_CTL_SETTINGS, g_sha, GBAHP_SET_PREFER_NEWEST);   /* the phone says: "newest" */
+	usleep(500000);
+	CHECK(log_has(&pc, "Configuracoes diferentes"));
+	CHECK(!file_exists(ini));                                      /* an announcement alone changes nothing */
+	send_control(&ph, GBAHP_CTL_SETTINGS_SET, g_sha, GBAHP_SET_PREFER_NEWEST);   /* the user chose "newest" for both */
+	usleep(500000);
+	CHECK(file_exists(ini));
+	phone_close(&ph);
+	CHECK(pc_stop(&pc) == 0);
+	l = slurp(pc.log);
+	if (failures) fprintf(stderr, "--- I1: desktop log ---\n%s", l);
+	free(l);
+	kill_all_pcs();
+
+	/* after a restart the PC announces the saved choice */
+	port = free_port();
+	phone_reset(&ph, 0x7F);
+	REQUIRE(pc_start(&pc, "i2", data, port, extra) == 0);
+	REQUIRE(phone_connect(&ph, port, gbah_core_version()) == 0);
+	bits = 99;
+	REQUIRE(wait_settings(&ph, &bits, 5000));
+	CHECK(bits == GBAHP_SET_PREFER_NEWEST);
+	/* ... and back to "ask" persists too */
+	send_control(&ph, GBAHP_CTL_SETTINGS_SET, g_sha, 0);
+	usleep(500000);
+	phone_close(&ph);
+	CHECK(pc_stop(&pc) == 0);
+	kill_all_pcs();
+	port = free_port();
+	phone_reset(&ph, 0x7F);
+	REQUIRE(pc_start(&pc, "i3", data, port, extra) == 0);
+	REQUIRE(phone_connect(&ph, port, gbah_core_version()) == 0);
+	bits = 99;
+	REQUIRE(wait_settings(&ph, &bits, 5000));
+	CHECK(bits == 0);
+	phone_close(&ph);
+	CHECK(pc_stop(&pc) == 0);
+}
+
 /* ------------------------------------------------------------------ scenario F (second instance) */
 
 static void scenario_f(const char *data1, const char *data2)
@@ -941,6 +1198,13 @@ int main(int argc, char **argv)
 	if (!failures) { scenario_b(data); kill_all_pcs(); }
 	if (!failures) { scenario_c(data); kill_all_pcs(); }
 	if (!failures) { scenario_d(data); kill_all_pcs(); }
+	if (!failures) { scenario_g(data); kill_all_pcs(); }
+	if (!failures) { scenario_h(data); kill_all_pcs(); }
+	{
+		char d3[320];
+		snprintf(d3, sizeof d3, "%s/data_i", g_base);
+		scenario_i(d3); kill_all_pcs();
+	}
 	scenario_e(data_f); kill_all_pcs();
 	{
 		char d1[320], d2[320];

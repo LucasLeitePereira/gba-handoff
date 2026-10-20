@@ -56,6 +56,16 @@ void gbah_sync_adopt(gbah_meta *local, const gbah_meta *in)
 	local->base = in->version;
 }
 
+int gbah_sync_newest(const gbah_meta *a, const gbah_meta *b)
+{
+	int c;
+	if (a->has_data != b->has_data) return a->has_data ? 1 : -1;
+	if (a->timestamp_ms != b->timestamp_ms) return a->timestamp_ms > b->timestamp_ms ? 1 : -1;
+	if (a->version.counter != b->version.counter) return a->version.counter > b->version.counter ? 1 : -1;
+	c = memcmp(a->version.dev, b->version.dev, 16);
+	return c > 0 ? 1 : c < 0 ? -1 : 0;
+}
+
 /* ------------------------------------------------------------ meta codec */
 
 static void p32(uint8_t *p, uint32_t v) { for (int i = 0; i < 4; i++) p[i] = (uint8_t)(v >> (8 * i)); }

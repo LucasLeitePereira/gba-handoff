@@ -20,6 +20,7 @@ void Status::set_connected(const std::string &device_name)
 	{
 		std::lock_guard<std::mutex> l(m_);
 		device_ = device_name;
+		if (!device_name.empty()) refusal_.clear();
 	}
 	connected_ = !device_name.empty();
 	gen_++;
@@ -53,10 +54,26 @@ std::string Status::note() const
 	return note_;
 }
 
+void Status::set_refusal(const std::string &why)
+{
+	{
+		std::lock_guard<std::mutex> l(m_);
+		refusal_ = why;
+	}
+	gen_++;
+}
+
+std::string Status::refusal() const
+{
+	std::lock_guard<std::mutex> l(m_);
+	return refusal_;
+}
+
 std::string Status::title() const
 {
 	std::lock_guard<std::mutex> l(m_);
 	if (!device_.empty()) return "GBA Handoff - conectado: " + device_;
+	if (!refusal_.empty()) return "GBA Handoff - " + refusal_;
 	if (!note_.empty()) return "GBA Handoff - " + note_;
 	return "GBA Handoff";
 }
@@ -440,8 +457,17 @@ intptr_t Server::session(intptr_t sock)
 	size_t n = gbahp_encode_hello_ack(&ack, out, sizeof out);
 	if (!n || gbahp_conn_send(&c, out, n) != 0) { gbahp_conn_close(&c); ended_++; return GBAHP_BAD_SOCK; }
 	if (ack.status != GBAHP_ACK_OK) {
-		SDL_Log("link: refused '%s' (status %d: %s)", name.c_str(), ack.status,
-		        ack.status == GBAHP_ACK_CORE_MISMATCH ? "different mGBA version" : "different protocol version");
+		// The user must be told what to do, not just that it failed (the phone shows the same advice).
+		std::string why;
+		if (ack.status == GBAHP_ACK_PROTO_MISMATCH)
+			why = "versao do app do celular (v" + std::to_string(theirs.proto_version) + ") diferente da do PC (v" +
+			      std::to_string(GBAHP_VERSION) + "): atualize o app do celular e o do PC";
+		else if (ack.status == GBAHP_ACK_CORE_MISMATCH)
+			why = "emulador (mGBA) do celular diferente do PC: atualize o app do celular e o do PC";
+		else
+			why = "celular recusado (codigo " + std::to_string(ack.status) + ")";
+		SDL_Log("link: refused '%s' (status %d): %s", name.c_str(), ack.status, why.c_str());
+		st_.set_refusal(why);
 		gbahp_net_shutdown(c.s);
 		gbahp_conn_close(&c);
 		ended_++;

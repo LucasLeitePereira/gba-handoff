@@ -2,8 +2,11 @@
 build-*/
 # ROMs comerciais do usuário (nunca versionar)
 roms/
+# ROMs de teste próprias (homebrew CC0) são versionadas: o ctest depende delas
+!tests/roms/
 # adb for Windows (tools/fetch-adb-windows.sh): never versioned
 adb/
 dist/
 *.exe
 AdbWin*.dll
+tests/roms/*.sav

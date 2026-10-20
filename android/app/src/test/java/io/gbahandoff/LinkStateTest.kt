@@ -19,12 +19,14 @@ class LinkStateTest {
     @Test fun fullSnapshot() {
         val text = """
             S 2 MEU PC do Lucas
-            H $a
+            H $a 1700000200000
             W $b
             P 1 $a
             O $b
             T $a 42
             C $a 1700000000000 3600 0 1700000100000 7200 1 1 0 1
+            Q $b 1
+            D 1 0
             N Jogando no PC
             N Cabo desconectado: retomando
         """.trimIndent() + "\n"
@@ -32,6 +34,9 @@ class LinkStateTest {
         assertEquals(LinkClient.CONNECTED, s.status)
         assertEquals("MEU PC do Lucas", s.peer)
         assertEquals(setOf(a), s.onPc)
+        assertEquals(mapOf(a to 1700000200000L), s.onPcTs)
+        assertEquals(mapOf(b to true), s.places)
+        assertEquals(Pair(true, false), s.settingsDiff)
         assertEquals(setOf(b), s.waiting)
         assertEquals(a, s.pcPlaying)
         assertEquals(b, s.openRequest)
@@ -39,6 +44,15 @@ class LinkStateTest {
         assertEquals(listOf("Jogando no PC", "Cabo desconectado: retomando"), s.notices)
         val c = s.conflicts.single()
         assertEquals(Conflict(a, 1700000000000, 3600, 0, 1700000100000, 7200, 1, true, false, true), c)
+    }
+
+    @Test fun refusalAndOldFormats() {
+        val s = LinkState.parse("S 3 \nX 1 2\nH $a\nQ $b 0\n")
+        assertEquals(LinkClient.REFUSED, s.status)
+        assertEquals(1, s.refusalStatus); assertEquals(2, s.refusalProto)
+        assertEquals(mapOf(a to 0L), s.onPcTs)           // H without a time still parses
+        assertEquals(mapOf(b to false), s.places)
+        assertNull(LinkState.parse("D 1 1\n".replace("1 1", "x y")).settingsDiff)
     }
 
     @Test fun pcNotPlayingAndEmptyPeer() {
@@ -49,7 +63,7 @@ class LinkStateTest {
     }
 
     @Test fun malformedRecordsAreSkipped() {
-        val s = LinkState.parse("X nada\nH curto\nC $a 1 2\nC $a 1 2 3 4 5 6 7 x 9\nT $a\nS notnum\nO zz\nN \n\n??\n")
+        val s = LinkState.parse("X nada\nQ zz 1\nD 1\nH curto\nC $a 1 2\nC $a 1 2 3 4 5 6 7 x 9\nT $a\nS notnum\nO zz\nN \n\n??\n")
         assertEquals(LinkState(), s)
     }
 

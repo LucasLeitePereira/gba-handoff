@@ -149,6 +149,46 @@ std::string title_of(const std::string &rom_path)
 
 } // namespace
 
+std::string settings_to_text(const Settings &s)
+{
+	return std::string("prefer_newest=") + (s.prefer_newest ? "1" : "0") + "\n";
+}
+
+Settings settings_from_text(const std::string &text)
+{
+	Settings s;
+	size_t pos = 0;
+	while (pos < text.size()) {
+		size_t end = text.find('\n', pos);
+		if (end == std::string::npos) end = text.size();
+		std::string line = text.substr(pos, end - pos);
+		pos = end + 1;
+		while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+		size_t eq = line.find('=');
+		if (eq == std::string::npos) continue;
+		const std::string key = line.substr(0, eq), val = line.substr(eq + 1);
+		if (key == "prefer_newest") s.prefer_newest = val == "1" || val == "true";
+	}
+	return s;
+}
+
+Settings Library::load_settings() const
+{
+	void *buf = nullptr;
+	size_t n = 0;
+	Settings s;
+	if (gbah_fs_read_all((root_ + "/settings.ini").c_str(), &buf, &n) == 0 && n < 4096)
+		s = settings_from_text(std::string((const char *)buf, n));
+	gbah_fs_free(buf);
+	return s;
+}
+
+bool Library::save_settings(const Settings &s) const
+{
+	const std::string t = settings_to_text(s);
+	return gbah_fs_write_atomic((root_ + "/settings.ini").c_str(), t.data(), t.size()) == 0;
+}
+
 bool Library::open(const std::string &root)
 {
 	root_ = root.empty() ? default_root() : root;

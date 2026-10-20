@@ -48,6 +48,12 @@ object LinkClient {
     @JvmStatic private external fun nativeResolve(sha: String, keepPhone: Boolean)
     @JvmStatic private external fun nativeFetch(sha: String)
     @JvmStatic private external fun nativeAckOpen(sha: String)
+    @JvmStatic private external fun nativePlayHere(): Int
+    @JvmStatic private external fun nativePlace(sha: String, onPc: Boolean)
+    @JvmStatic private external fun nativeSetPreferNewest(on: Boolean)
+    @JvmStatic private external fun nativeSettingsSet(on: Boolean)
+    @JvmStatic private external fun nativeSettingsAnnounce()
+    @JvmStatic private external fun nativeSetControl(on: Boolean)
     @JvmStatic private external fun nativeMigrate(gamesDir: String, backupDir: String, id: ByteArray): Int
 
     /**
@@ -65,6 +71,8 @@ object LinkClient {
         roms = lib
         try { nativeMigrate(games.path, File(app.filesDir, "legacy-backup").path, id) } catch (_: Throwable) { }
         nativeInit(games.path, romsDir.path, id, deviceName())
+        nativeSetPreferNewest(preferNewest(app))
+        nativeSetControl(controlMode(app))
         registerLegacyRom(app, lib)
         publishRoms()
         return lib
@@ -144,6 +152,32 @@ object LinkClient {
     fun resolve(sha1: String, keepPhone: Boolean) = nativeResolve(sha1, keepPhone)
     fun fetch(sha1: String) = nativeFetch(sha1)
     fun ackOpen(sha1: String) = nativeAckOpen(sha1)
+
+    /** "Jogar aqui mesmo assim" (cable out): 0 = the game is back on the phone. */
+    fun playHere(): Int = nativePlayHere()
+    /** Answer of the "Continuar no" question. */
+    fun place(sha1: String, onPc: Boolean) = nativePlace(sha1, onPc)
+
+    // ---- settings (SharedPreferences "app"; the engine only holds the current value)
+    fun preferNewest(ctx: Context): Boolean = ctx.getSharedPreferences("app", Context.MODE_PRIVATE).getBoolean("prefer_newest", false)
+
+    /** The user toggled it on the phone: saves, tells the engine and announces it to the PC (it asks to choose if they differ). */
+    fun setPreferNewest(ctx: Context, on: Boolean) {
+        ctx.getSharedPreferences("app", Context.MODE_PRIVATE).edit().putBoolean("prefer_newest", on).apply()
+        if (roms != null) { nativeSetPreferNewest(on); nativeSettingsAnnounce() }
+    }
+
+    /** The user chose the default for BOTH devices (answer of the "settings differ" dialog). */
+    fun chooseSettings(ctx: Context, preferNewest: Boolean) {
+        ctx.getSharedPreferences("app", Context.MODE_PRIVATE).edit().putBoolean("prefer_newest", preferNewest).apply()
+        if (roms != null) nativeSettingsSet(preferNewest)
+    }
+
+    fun controlMode(ctx: Context): Boolean = ctx.getSharedPreferences("app", Context.MODE_PRIVATE).getBoolean("control_mode", false)
+    fun setControlMode(ctx: Context, on: Boolean) {
+        ctx.getSharedPreferences("app", Context.MODE_PRIVATE).edit().putBoolean("control_mode", on).apply()
+        if (roms != null) nativeSetControl(on)
+    }
 
     /** RGBA picture of a conflict side (240x160) or null. */
     fun conflictThumb(sha1: String, remote: Boolean): Bitmap? {

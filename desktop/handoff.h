@@ -31,7 +31,10 @@ public:
 		Playing,     // emulating
 		Conflict,    // paused: this game diverges from the phone, the user decides on the phone
 		Returning,   // paused: state sent to the phone, waiting for its STATE_ACK
-		WaitPhone    // game handed to the phone ("Jogando no celular")
+		WaitPhone,   // game handed to the phone ("Jogando no celular")
+		AwaitPlace   // paused: a conflict was resolved (or the cable dropped while paused); NOBODY plays until the
+		             // phone says where to continue (CONTROL PLACE_PC / PLACE_PHONE) or, without a cable, the user
+		             // presses Enter. This is what keeps "exactly one side plays" true after a resolution.
 	};
 
 	Hub(gbah_core *core, Library &lib, DiskQueue &disk, Server &server, Status &st, const HubOptions &opt);
@@ -49,7 +52,12 @@ public:
 	bool open_game(const uint8_t sha1[20]);   // from the menu: resume the stored progress
 	void close_game();                        // checkpoint, back to the menu
 	void request_return();                    // F2: hand the game to the phone
-	void resume_local();                      // WaitPhone -> keep playing the PC's own version
+	void resume_local();                      // WaitPhone / AwaitPlace without a cable -> play the PC's own version
+	// Settings (menu): the change is saved and announced to the phone, which asks the user if the two differ.
+	const Settings &settings() const { return settings_; }
+	void set_prefer_newest(bool on);
+	// Persistent line for the screen ("" = none): settings differ and the phone has to pick the default.
+	std::string pending_text() const;
 	void quick_save();                        // F5
 	void quick_load();                        // F8
 	// Imports a ROM file into the library (command line / drag and drop). Returns the game or null.
@@ -87,6 +95,11 @@ private:
 	void on_push(const std::shared_ptr<PushData> &p);
 	void on_ack(const gbahp_state_ack &a);
 	void on_control(const gbahp_control &c);
+	void set_mode(Mode m, const char *why);    // the ONLY place that changes mode_ (logs it, releases remote keys)
+	void send_settings();
+	void on_phone_settings(uint32_t bits, bool chosen);
+	void place_pc(GameInfo *g);
+	void place_phone(GameInfo *g);
 	void on_rom_received(const uint8_t sha1[20]);
 
 	SnapPtr take_snapshot();                   // advances + queues the commit if there is new progress
@@ -127,6 +140,11 @@ private:
 	uint32_t next_periodic_ = 0, last_snap_ms_ = 0;
 	uint32_t sram_frames_ = 0;
 	uint64_t sram_hash_ = 0;
+
+	Settings settings_;
+	bool phone_settings_known_ = false;        // the phone announced its settings in this session
+	bool phone_prefer_newest_ = false;
+	bool settings_pending_ = false;            // they differ: waiting for the phone's SETTINGS_SET
 
 	std::map<std::string, gbahp_lib_entry> phone_lib_;   // by sha1 hex
 	std::map<std::string, std::shared_ptr<PushData>> held_;   // pushes waiting for their ROM

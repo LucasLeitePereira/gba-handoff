@@ -147,7 +147,16 @@ int main(int argc, char **argv)
 			CHECK(ack.hello.core_version.n == strlen(gbah_core_version()));
 			{ /* server LIBRARY: our ROM, identified by the SHA-1 given by CMake */
 				gbahp_library l; gbahp_lib_entry e;
-				CHECK(gbahp_conn_recv(&c, &f, 5000) == 1 && f.type == GBAHP_MSG_LIBRARY);
+				int got_settings = 0, r, k = 0;
+				do {   /* v3: the PC announces its settings (CONTROL SETTINGS) before the LIBRARY */
+					r = gbahp_conn_recv(&c, &f, 5000);
+					if (r == 1 && f.type == GBAHP_MSG_CONTROL) {
+						gbahp_control cc;
+						if (gbahp_decode_control(f.payload, f.len, &cc) == 0 && cc.cmd == GBAHP_CTL_SETTINGS) got_settings = 1;
+					}
+				} while (r == 1 && f.type != GBAHP_MSG_LIBRARY && ++k < 10);
+				CHECK(got_settings);
+				CHECK(r == 1 && f.type == GBAHP_MSG_LIBRARY);
 				CHECK(gbahp_decode_library(f.payload, f.len, &l) == 0 && l.count == 1);
 				if (l.count == 1) {
 					gbahp_library_get(&l, 0, &e);

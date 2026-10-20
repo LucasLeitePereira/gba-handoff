@@ -28,7 +28,7 @@
 extern "C" {
 #endif
 
-#define GBAHP_VERSION        2
+#define GBAHP_VERSION        3
 #define GBAHP_HEADER_SIZE    16
 #define GBAHP_MAX_PAYLOAD    (64u * 1024u * 1024u)
 #define GBAHP_DEFAULT_PORT   27183
@@ -208,8 +208,15 @@ enum {
 	GBAHP_CTL_RETURN          = 1,  /* phone -> PC: stop playing and HANDOFF-push the game back to me */
 	GBAHP_CTL_FETCH           = 2,  /* phone -> PC: push your version of the game (RESOLVED); you keep playing */
 	GBAHP_CTL_PC_STATUS       = 3,  /* PC -> phone: arg 1 = playing sha1, 0 = idle (sha1 ignored) */
-	GBAHP_CTL_ROM_UNAVAILABLE = 4   /* either way: cannot provide the ROM that was asked for (answers ROM_REQUEST) */
+	GBAHP_CTL_ROM_UNAVAILABLE = 4,  /* either way: cannot provide the ROM that was asked for (answers ROM_REQUEST) */
+	GBAHP_CTL_PLACE_PC        = 5,  /* phone -> PC: after a conflict was resolved, the PC plays the game (sha1) from what it stores */
+	GBAHP_CTL_PLACE_PHONE     = 6,  /* phone -> PC: ... the phone plays it; the PC stays paused ("Jogando no celular") */
+	GBAHP_CTL_SETTINGS        = 7,  /* either way, right after HELLO: arg = GBAHP_SET_* bits (announcement; sha1 ignored) */
+	GBAHP_CTL_SETTINGS_SET    = 8   /* phone -> PC: the user chose these bits as the default for both: adopt and save */
 };
+/* GBAHP_CTL_SETTINGS / SETTINGS_SET bits */
+#define GBAHP_SET_PREFER_NEWEST 1u  /* resolve a version conflict by itself: the newest version wins (the loser is backed up) */
+#define GBAHP_CTL_LAST GBAHP_CTL_SETTINGS_SET
 typedef struct { uint8_t cmd; uint8_t sha1[20]; uint32_t arg; } gbahp_control;
 
 /* THUMB: the thumbnail of a game's version (sent for conflicts: the LIBRARY has no images). */

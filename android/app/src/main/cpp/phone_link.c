@@ -39,7 +39,9 @@
 #define MAX_ROM_BYTES (33u << 20)
 
 enum { K_SYNC = 0, K_HANDOFF, K_RESOLVED, K_MIRROR };
-enum { CMD_RETURN = 1, CMD_RESOLVE, CMD_FETCH, CMD_HANDOFF, CMD_INPUT };
+enum { CMD_RETURN = 1, CMD_RESOLVE, CMD_FETCH, CMD_HANDOFF, CMD_PLACE, CMD_SETTINGS_SET, CMD_SETTINGS_ANNOUNCE };
+#define PLACE_WAIT_MS 6000    /* the PC must confirm PLACE_PC with PC_STATUS within this */
+#define LEAVE_WAIT_MS 5000    /* reconnect: wait this long for the PC's newer copy before resuming */
 #define INPUT_RESEND_MS 100   /* re-send period while a key is held (recovers loss across a reconnect) */
 #define FAST_POLL_MS 8        /* link thread poll while the game is on the PC (input latency) */
 
@@ -67,6 +69,10 @@ typedef struct {
 } conflict_t;
 
 typedef struct { uint8_t sha1[20]; gbah_ver ver; int kind; uint64_t t_ms; } inflight_t;
+
+/* "Continue on: phone | PC" question after a conflict was resolved: the game is held (on both sides)
+ * until the user answers. */
+typedef struct { uint8_t sha1[20]; int waiting; uint64_t t_ms; } place_t;
 
 typedef struct {
 	uint8_t sha1[20];
@@ -102,6 +108,12 @@ struct phone_link {
 	int handoff_pending; uint8_t handoff_sha[20];
 	int pc_playing; uint8_t pc_sha[20];
 	conflict_t conf[MAX_CONF]; int nconf;
+	place_t place[MAX_CONF]; int nplace;
+	atomic_int prefer_newest;           /* setting "always keep the newest version" */
+	int pc_pref_known, pc_pref;         /* the PC's setting, this session (mtx) */
+	atomic_int control_on;              /* control mode: INPUT goes to the PC only then */
+	atomic_uint latest_keys; atomic_int keys_dirty;
+	int refuse_status; unsigned refuse_proto;   /* last HELLO refusal (mtx) */
 	char notices[MAX_NOTICES][200]; int nnotice;
 	int open_has; uint8_t open_sha[20];
 	int rx_active, rx_pct; uint8_t rx_sha[20];
@@ -183,6 +195,7 @@ static void update_hold(phone_link *p)
 		if (p->handoff_pending && !memcmp(cur, p->handoff_sha, 20)) want = 1;
 		if (p->on_pc_has && !memcmp(cur, p->on_pc_sha, 20)) want = 1;
 		for (i = 0; i < p->nconf; i++) if (!memcmp(cur, p->conf[i].sha1, 20)) want = 1;
+		for (i = 0; i < p->nplace; i++) if (!memcmp(cur, p->place[i].sha1, 20)) want = 1;
 	}
 	pthread_mutex_unlock(&p->mtx);
 	if (want != p->held) {
@@ -438,6 +451,8 @@ typedef struct {
 	uint8_t rx_sha[20]; uint64_t rx_total; uint8_t *rx_buf; size_t rx_len; int rx_on;
 	struct { uint8_t sha[20]; uint8_t *th; } tcache[4]; int tnext;
 	uint32_t in_seq; uint16_t in_keys; uint64_t in_sent_ms;   /* last INPUT sent (link thread only) */
+	int leave_pending;                         /* reconnect: the game was on the PC and the PC does not play it now */
+	int leave_set; uint8_t leave_sha[20]; uint64_t leave_at;   /* ... and its newer copy is on the way */
 } sess_t;
 
 static int send_frame(sess_t *s, const void *buf, size_t n)
@@ -608,6 +623,43 @@ static void conflict_add(sess_t *s, const uint8_t sha[20], const gbah_meta *loca
 	update_hold(p);
 }
 
+static void place_remove(phone_link *p, const uint8_t sha[20])
+{
+	int i;
+	pthread_mutex_lock(&p->mtx);
+	for (i = 0; i < p->nplace; i++)
+		if (!memcmp(p->place[i].sha1, sha, 20)) {
+			memmove(&p->place[i], &p->place[i + 1], sizeof p->place[0] * (size_t)(p->nplace - i - 1));
+			p->nplace--;
+			break;
+		}
+	pthread_mutex_unlock(&p->mtx);
+}
+
+/* A conflict was resolved and both sides hold the same winner: ask where to continue. If the PC is
+ * busy with another game the answer is obvious (the phone) and given right away. */
+static void place_add(sess_t *s, const uint8_t sha[20])
+{
+	phone_link *p = s->p;
+	int i, busy_pc, found = 0;
+	pthread_mutex_lock(&p->mtx);
+	busy_pc = p->pc_playing && memcmp(p->pc_sha, sha, 20) != 0;
+	if (!busy_pc) {
+		for (i = 0; i < p->nplace; i++) if (!memcmp(p->place[i].sha1, sha, 20)) { p->place[i].waiting = 0; found = 1; }
+		if (!found && p->nplace < MAX_CONF) {
+			place_t *q = &p->place[p->nplace++];
+			memset(q, 0, sizeof *q);
+			memcpy(q->sha1, sha, 20);
+		}
+	}
+	pthread_mutex_unlock(&p->mtx);
+	if (busy_pc) {
+		send_control(s, GBAHP_CTL_PLACE_PHONE, sha, 0);
+		notice(p, "O PC esta jogando outro jogo: este continua no celular");
+	}
+	update_hold(p);
+}
+
 static int have_rom(phone_link *p, const uint8_t sha[20])
 {
 	char src[600];
@@ -691,7 +743,7 @@ static void handle_push(sess_t *s, pushcopy *pc)
 	phone_link *p = s->p;
 	uint8_t cur[20];
 	gbah_meta m, r, nm;
-	int d, is_loaded, resolved, handoff, store = 0, take, on_pc_this;
+	int d, is_loaded, resolved, handoff, store = 0, take, on_pc_this, leave_now = 0;
 
 	if (!have_rom(p, pc->sha1)) {
 		uint8_t sha[20];
@@ -744,7 +796,8 @@ static void handle_push(sess_t *s, pushcopy *pc)
 	/* The core follows the store on a takeover, or when this is the game loaded in it and the push
 	 * replaces what we hold (a loaded game whose copy is older had no new frames: the checkpoint
 	 * above would have turned it into a conflict otherwise). A game that is on the PC is only stored. */
-	take = handoff || (is_loaded && store && !on_pc_this);
+	leave_now = on_pc_this && store && !handoff && s->leave_set && !memcmp(s->leave_sha, pc->sha1, 20);
+	take = handoff || (is_loaded && store && (!on_pc_this || leave_now));
 
 	if (store) {
 		int rc;
@@ -778,11 +831,13 @@ static void handle_push(sess_t *s, pushcopy *pc)
 			pthread_mutex_unlock(&p->mtx);
 		}
 	}
-	if (handoff) {   /* only now (core already following the store) does the game stop being "on the PC" */
+	if (handoff || leave_now) {   /* only now (core already following the store) does the game stop being "on the PC" */
 		pthread_mutex_lock(&p->mtx);
 		if (p->on_pc_has && !memcmp(p->on_pc_sha, pc->sha1, 20)) p->on_pc_has = 0;
 		pthread_mutex_unlock(&p->mtx);
+		if (leave_now) { s->leave_set = 0; notice(p, "O PC parou de jogar: continuando do ultimo estado dele"); }
 	}
+	if (resolved) place_add(s, pc->sha1);
 	update_hold(p);
 	if (resolved) notice(p, "Versao do PC mantida");
 }
@@ -954,6 +1009,7 @@ static void handle_ack(sess_t *s, const gbahp_state_ack *a)
 			notice(p, "Jogando no PC");
 		} else if (in.kind == K_RESOLVED) {
 			conflict_remove(p, a->sha1_rom);
+			place_add(s, a->sha1_rom);
 			update_hold(p);
 			notice(p, "Versao do celular mantida");
 		}
@@ -1050,17 +1106,25 @@ static void process_pc_library(sess_t *s)
 		switch (d) {
 		case GBAH_SYNC_SEND:
 		case GBAH_SYNC_NOTHING:
+			if (on_pc_this && s->leave_pending) { s->leave_pending = 0; leave_on_pc(p, "O PC parou de jogar"); break; }
 			if (on_pc_this) break;                                   /* it is on the PC already */
 			if (is_cur && (!pc_playing || !memcmp(pc_sha, e->sha1, 20))) { start_handoff(s, e->sha1); break; }
 			if (d == GBAH_SYNC_SEND) push_game(s, e->sha1, 0, K_SYNC);
 			break;
 		case GBAH_SYNC_CONFLICT:
+			if (on_pc_this) s->leave_pending = 0;
 			conflict_add(s, e->sha1, &m, &r, 1);
 			notice(p, "Conflito de versoes: escolha qual manter");
 			break;
-		default: break;   /* RECEIVE: the PC pushes */
+		default:   /* RECEIVE: the PC pushes */
+			if (on_pc_this && s->leave_pending) {   /* apply the PC's copy when it arrives, then play here */
+				s->leave_pending = 0; s->leave_set = 1; s->leave_at = mono_ms();
+				memcpy(s->leave_sha, e->sha1, 20);
+			}
+			break;
 		}
 	}
+	if (s->leave_pending) { s->leave_pending = 0; leave_on_pc(p, "O PC parou de jogar"); }   /* not listed by the PC */
 	/* The open game is not on the PC at all: hand it over (the PC will ask for the ROM). */
 	if (has_cur && !cur_listed && !pc_playing) {
 		gbah_meta m;
@@ -1076,14 +1140,26 @@ static void process_pc_library(sess_t *s)
 static void handle_status(sess_t *s, const gbahp_control *c)
 {
 	phone_link *p = s->p;
-	int playing = c->arg != 0, leave = 0;
+	int playing = c->arg != 0, leave = 0, placed = 0, i;
 	pthread_mutex_lock(&p->mtx);
 	p->pc_playing = playing;
 	if (playing) memcpy(p->pc_sha, c->sha1, 20); else memset(p->pc_sha, 0, 20);
+	if (playing)   /* the PC took the game we asked it to continue (PLACE_PC) */
+		for (i = 0; i < p->nplace; i++)
+			if (p->place[i].waiting && !memcmp(p->place[i].sha1, c->sha1, 20)) {
+				memmove(&p->place[i], &p->place[i + 1], sizeof p->place[0] * (size_t)(p->nplace - i - 1));
+				p->nplace--;
+				p->on_pc_has = 1;
+				memcpy(p->on_pc_sha, c->sha1, 20);
+				placed = 1;
+				break;
+			}
 	if (p->on_pc_has && !p->handoff_pending && (!playing || memcmp(p->on_pc_sha, c->sha1, 20))) leave = 1;
 	pthread_mutex_unlock(&p->mtx);
 	s->got_status = 1;
-	if (leave) leave_on_pc(p, "O PC parou de jogar");
+	if (placed) { update_hold(p); notice(p, "Jogando no PC"); }
+	if (leave && !s->lib_done) s->leave_pending = 1;   /* (re)connecting: first see what the PC has to give back */
+	else if (leave) leave_on_pc(p, "O PC parou de jogar");
 }
 
 static void handle_thumb(sess_t *s, const gbahp_thumb *t)
@@ -1120,12 +1196,23 @@ static int game_on_pc(phone_link *p)
 
 /* Phone as a controller (phase 5). Only while the game is on the PC; `force` = a change (send now),
  * otherwise only the periodic re-send of held keys. Link thread only: it owns the socket. */
+static int input_allowed(phone_link *p)
+{
+	uint8_t cur[20];
+	int ok;
+	if (!atomic_load(&p->control_on) || !loaded_sha(p, cur)) return 0;
+	pthread_mutex_lock(&p->mtx);
+	ok = p->on_pc_has && !memcmp(p->on_pc_sha, cur, 20) && p->pc_playing && !memcmp(p->pc_sha, cur, 20);
+	pthread_mutex_unlock(&p->mtx);
+	return ok;
+}
+
 static void send_input(sess_t *s, uint16_t keys, int force)
 {
 	gbahp_input in;
 	uint8_t out[64];
 	uint64_t t = mono_ms();
-	if (!game_on_pc(s->p)) {   /* game left the PC: release whatever the PC still holds, once */
+	if (!input_allowed(s->p)) {   /* not in control mode / the open game is not the PC's: release whatever the PC still holds, once */
 		if (s->in_keys) { in.seq = ++s->in_seq; in.keys = 0; s->in_keys = 0; send_frame(s, out, gbahp_encode_input(&in, out, sizeof out)); }
 		return;
 	}
@@ -1154,8 +1241,29 @@ static void handle_cmd(sess_t *s, const cmd_t *c)
 	case CMD_FETCH:
 		send_control(s, GBAHP_CTL_FETCH, c->sha1, 0);
 		break;
-	case CMD_INPUT:
-		send_input(s, (uint16_t)c->arg, 1);
+	case CMD_PLACE: {
+		int i, have = 0;
+		pthread_mutex_lock(&p->mtx);
+		for (i = 0; i < p->nplace; i++)
+			if (!memcmp(p->place[i].sha1, c->sha1, 20)) { have = 1; if (c->arg) { p->place[i].waiting = 1; p->place[i].t_ms = mono_ms(); } }
+		pthread_mutex_unlock(&p->mtx);
+		if (!have) break;
+		if (c->arg) send_control(s, GBAHP_CTL_PLACE_PC, c->sha1, 0);
+		else {
+			send_control(s, GBAHP_CTL_PLACE_PHONE, c->sha1, 0);
+			place_remove(p, c->sha1);
+			update_hold(p);
+		}
+		break;
+	}
+	case CMD_SETTINGS_SET:
+		send_control(s, GBAHP_CTL_SETTINGS_SET, NULL, c->arg ? GBAHP_SET_PREFER_NEWEST : 0u);
+		pthread_mutex_lock(&p->mtx);
+		p->pc_pref_known = 1; p->pc_pref = c->arg != 0;
+		pthread_mutex_unlock(&p->mtx);
+		break;
+	case CMD_SETTINGS_ANNOUNCE:
+		send_control(s, GBAHP_CTL_SETTINGS, NULL, atomic_load(&p->prefer_newest) ? GBAHP_SET_PREFER_NEWEST : 0u);
 		break;
 	case CMD_HANDOFF: {   /* "send to the PC" for the game open on the phone */
 		uint8_t cur[20];
@@ -1206,6 +1314,67 @@ static void copy_push(pushcopy *pc, const gbahp_state_push *sp)
 	memcpy(pc->thumb, sp->thumb, sp->thumb_len);
 }
 
+/* "Keep the newest version": resolves open conflicts by itself when both devices have the setting on
+ * (no pending difference). The loser still goes to the backup (handle_push / the PC's on_push). */
+static void auto_resolve(sess_t *s)
+{
+	phone_link *p = s->p;
+	int i;
+	if (!atomic_load(&p->prefer_newest)) return;
+	for (;;) {
+		uint8_t sha[20];
+		gbah_meta l, r;
+		int pick = 0, found = 0;
+		pthread_mutex_lock(&p->mtx);
+		if (p->pc_pref_known && p->pc_pref) {
+			for (i = 0; i < p->nconf; i++)
+				if (p->conf[i].have_remote && !p->conf[i].waiting_pc) {
+					memcpy(sha, p->conf[i].sha1, 20);
+					l = p->conf[i].local; r = p->conf[i].remote;
+					p->conf[i].waiting_pc = 1;   /* provisional: this one is being handled */
+					found = 1;
+					break;
+				}
+		}
+		pthread_mutex_unlock(&p->mtx);
+		if (!found) return;
+		pick = gbah_sync_newest(&l, &r);
+		{
+			char when[40], msg[120];
+			fmt_time(pick >= 0 ? l.timestamp_ms : r.timestamp_ms, when, sizeof when);
+			snprintf(msg, sizeof msg, "Mantida a versao mais recente (%s, %s)", pick >= 0 ? "celular" : "PC", when);
+			notice(p, "%s", msg);
+		}
+		if (pick >= 0) {   /* the phone's (also on an exact tie: nothing is lost either way) */
+			if (push_game(s, sha, GBAHP_PUSH_RESOLVED, K_RESOLVED) != 0) {
+				notice(p, "Nao foi possivel enviar a versao do celular");
+				pthread_mutex_lock(&p->mtx);   /* the manual panel takes over */
+				for (i = 0; i < p->nconf; i++) if (!memcmp(p->conf[i].sha1, sha, 20)) { p->conf[i].have_remote = 0; p->conf[i].waiting_pc = 0; }
+				pthread_mutex_unlock(&p->mtx);
+			}   /* else waiting_pc stays 1: not decided again before the ACK removes the conflict */
+		} else {
+			send_control(s, GBAHP_CTL_FETCH, sha, 0);   /* waiting_pc stays 1 until the RESOLVED push arrives */
+		}
+	}
+}
+
+/* Timeouts and automatic decisions, once per loop turn (link thread). */
+static void housekeeping(sess_t *s, uint64_t t)
+{
+	phone_link *p = s->p;
+	int i, timed_out = 0;
+	if (s->lib_done) auto_resolve(s);
+	pthread_mutex_lock(&p->mtx);
+	for (i = 0; i < p->nplace; i++)
+		if (p->place[i].waiting && t - p->place[i].t_ms > PLACE_WAIT_MS) { p->place[i].waiting = 0; timed_out = 1; }
+	pthread_mutex_unlock(&p->mtx);
+	if (timed_out) notice(p, "O PC nao respondeu: escolha de novo onde continuar");
+	if (s->leave_set && t - s->leave_at > LEAVE_WAIT_MS) {   /* the PC's newer copy never came: play from the stored one */
+		s->leave_set = 0;
+		leave_on_pc(p, "O PC parou de jogar");
+	}
+}
+
 /* Returns 1 if the session reached CONNECTED. */
 static int session(phone_link *p, gbahp_sock sock)
 {
@@ -1240,6 +1409,10 @@ static int session(phone_link *p, gbahp_sock sock)
 	if (r != 1 || f.type != GBAHP_MSG_HELLO_ACK || gbahp_decode_hello_ack(f.payload, f.len, &ack) != 0) goto done;
 	if (ack.status != GBAHP_ACK_OK) {
 		LOGI("PC refused the connection (status %d)", ack.status);
+		pthread_mutex_lock(&p->mtx);
+		p->refuse_status = ack.status;
+		p->refuse_proto = ack.hello.proto_version;
+		pthread_mutex_unlock(&p->mtx);
 		atomic_store(&p->status, PL_ST_REFUSED);
 		goto done;
 	}
@@ -1252,6 +1425,9 @@ static int session(phone_link *p, gbahp_sock sock)
 	}
 	pthread_mutex_unlock(&p->mtx);
 	atomic_store(&p->status, PL_ST_CONNECTED);
+	pthread_mutex_lock(&p->mtx);
+	p->refuse_status = 0;
+	pthread_mutex_unlock(&p->mtx);
 	established = 1;
 	LOGI("connected to PC '%s'", p->peer);
 
@@ -1259,6 +1435,7 @@ static int session(phone_link *p, gbahp_sock sock)
 		uint8_t cur[20];
 		if (loaded_sha(p, cur)) checkpoint(p, 0, NULL);
 	}
+	send_control(s, GBAHP_CTL_SETTINGS, NULL, atomic_load(&p->prefer_newest) ? GBAHP_SET_PREFER_NEWEST : 0u);
 	send_library(s);
 
 	last_rx = last_ping = mono_ms();
@@ -1266,7 +1443,7 @@ static int session(phone_link *p, gbahp_sock sock)
 		uint64_t t;
 		cmd_t cmd;
 		int have_cmd;
-		r = gbahp_conn_recv(&s->c, &f, game_on_pc(p) ? FAST_POLL_MS : 100);
+		r = gbahp_conn_recv(&s->c, &f, atomic_load(&p->control_on) && game_on_pc(p) ? FAST_POLL_MS : 100);
 		t = mono_ms();
 		if (r < 0) break;
 		if (r == 1) {
@@ -1295,6 +1472,12 @@ static int session(phone_link *p, gbahp_sock sock)
 				gbahp_control c;
 				if (gbahp_decode_control(f.payload, f.len, &c) == 0) {
 					if (c.cmd == GBAHP_CTL_PC_STATUS) handle_status(s, &c);
+					else if (c.cmd == GBAHP_CTL_SETTINGS) {
+						pthread_mutex_lock(&p->mtx);
+						p->pc_pref_known = 1;
+						p->pc_pref = (c.arg & GBAHP_SET_PREFER_NEWEST) != 0;
+						pthread_mutex_unlock(&p->mtx);
+					}
 					else if (c.cmd == GBAHP_CTL_ROM_UNAVAILABLE) { drop_held(s, c.sha1, 1); notice(p, "O PC nao tem a ROM"); }
 				}
 				break;
@@ -1342,7 +1525,9 @@ static int session(phone_link *p, gbahp_sock sock)
 			if (!have_cmd) break;
 			handle_cmd(s, &cmd);
 		}
-		if (s->in_keys) send_input(s, s->in_keys, 0);   /* held keys: periodic re-send */
+		if (atomic_exchange(&p->keys_dirty, 0)) send_input(s, (uint16_t)atomic_load(&p->latest_keys), 1);
+		else if (s->in_keys) send_input(s, s->in_keys, 0);   /* held keys: periodic re-send (or one release if no longer allowed) */
+		housekeeping(s, t);
 		if (atomic_exchange(&p->mirror_req, 0) && s->lib_done && !mirror_inflight(s)) {
 			uint8_t cur[20];
 			int skip;
@@ -1385,8 +1570,15 @@ static void session_cleanup(phone_link *p)
 {
 	int i;
 	pthread_mutex_lock(&p->mtx);
+	/* A handoff cut by the cable: the PC may or may not have started it. Never resume by ourselves (two
+	 * sides playing is exactly what this avoids): the game counts as "on the PC, not synchronised" and
+	 * the user may play it here anyway (phone_cmd_play_here) or reconnect (the PC's copy then wins/ties). */
+	if (p->handoff_pending) { p->on_pc_has = 1; memcpy(p->on_pc_sha, p->handoff_sha, 20); }
 	p->handoff_pending = 0;
 	p->pc_playing = 0;
+	p->pc_pref_known = 0;
+	p->nplace = 0;
+	atomic_store(&p->keys_dirty, 0);
 	p->rx_active = 0;
 	for (i = 0; i < p->nconf; i++) free(p->conf[i].rthumb);
 	p->nconf = 0;
@@ -1415,7 +1607,9 @@ static void *link_main(void *arg)
 		delay = est ? RETRY_MIN_MS : RETRY_MAX_MS;
 		refused = atomic_load(&p->status) == PL_ST_REFUSED;
 		session_cleanup(p);
-		if (est && atomic_load(&p->run_link)) leave_on_pc(p, "Cabo desconectado");   /* not when the app just went to the background */
+		/* Cable gone: a game on the PC STAYS on the PC (held, "not synchronised"). The PC keeps playing it;
+		 * resuming here by ourselves would make two sides play the same game. */
+		if (est && atomic_load(&p->run_link) && game_on_pc(p)) notice(p, "Cabo desconectado: o jogo continua no PC");
 		if (atomic_load(&p->run_link)) {
 			if (!refused) atomic_store(&p->status, PL_ST_SEARCHING);
 			nap(p, &p->run_link, refused ? RETRY_MAX_MS : delay);
@@ -1548,10 +1742,6 @@ int phone_resume_stored(phone_link *p)
 static void enqueue(phone_link *p, int type, const uint8_t *sha, int arg)
 {
 	pthread_mutex_lock(&p->mtx);
-	if (type == CMD_INPUT) {   /* only the latest keys matter: replace a pending INPUT, never flood the queue */
-		int i;
-		for (i = 0; i < p->ncmd; i++) if (p->cmds[i].type == CMD_INPUT) { p->cmds[i].arg = arg; pthread_mutex_unlock(&p->mtx); return; }
-	}
 	if (p->ncmd < MAX_CMDS) {
 		cmd_t *c = &p->cmds[p->ncmd++];
 		c->type = type; c->arg = arg;
@@ -1565,14 +1755,52 @@ void phone_cmd_handoff(phone_link *p) { enqueue(p, CMD_HANDOFF, NULL, 0); }
 void phone_cmd_resolve(phone_link *p, const uint8_t sha1[20], int keep_phone) { enqueue(p, CMD_RESOLVE, sha1, keep_phone); }
 void phone_cmd_fetch(phone_link *p, const uint8_t sha1[20]) { enqueue(p, CMD_FETCH, sha1, 0); }
 
+/* The latest keys live in an atomic, not in the command queue: a release (keys == 0) can never be
+ * dropped by a full queue. The link thread sends them (and decides whether they are allowed). */
 void phone_cmd_input(phone_link *p, uint16_t keys)
 {
-	int on_pc;
+	if (!atomic_load(&p->control_on)) return;   /* only the control mode talks to the PC */
+	atomic_store(&p->latest_keys, keys);
+	atomic_store(&p->keys_dirty, 1);
+}
+
+void phone_set_control(phone_link *p, int on)
+{
+	atomic_store(&p->control_on, on ? 1 : 0);
+	if (!on) { atomic_store(&p->latest_keys, 0); atomic_store(&p->keys_dirty, 1); }   /* release what the PC holds */
+}
+
+void phone_set_prefer_newest(phone_link *p, int on) { atomic_store(&p->prefer_newest, on ? 1 : 0); }
+
+void phone_cmd_settings_set(phone_link *p, int on)
+{
+	atomic_store(&p->prefer_newest, on ? 1 : 0);
+	enqueue(p, CMD_SETTINGS_SET, NULL, on ? 1 : 0);
+}
+
+void phone_cmd_settings_announce(phone_link *p) { enqueue(p, CMD_SETTINGS_ANNOUNCE, NULL, 0); }
+
+void phone_cmd_place(phone_link *p, const uint8_t sha1[20], int on_pc) { enqueue(p, CMD_PLACE, sha1, on_pc ? 1 : 0); }
+
+/* "Jogar aqui mesmo assim": only without the cable. The game comes back from the last stored copy;
+ * the PC keeps its own, and the next connection reports a conflict if both advanced. */
+int phone_cmd_play_here(phone_link *p)
+{
+	uint8_t sha[20], cur[20];
+	int had, is_cur;
+	if (atomic_load(&p->status) == PL_ST_CONNECTED) return 1;
 	pthread_mutex_lock(&p->mtx);
-	on_pc = p->on_pc_has;
+	had = p->on_pc_has;
+	memcpy(sha, p->on_pc_sha, 20);
 	pthread_mutex_unlock(&p->mtx);
-	/* Nothing to tell the PC unless it is playing our game (the link thread re-checks). */
-	if (on_pc) enqueue(p, CMD_INPUT, NULL, keys);
+	if (!had) return 1;
+	is_cur = loaded_sha(p, cur) && !memcmp(cur, sha, 20);
+	if (is_cur && apply_stored(p, sha) != 0) { notice(p, "Nao foi possivel retomar o jogo guardado"); return -1; }
+	pthread_mutex_lock(&p->mtx);
+	p->on_pc_has = 0;
+	pthread_mutex_unlock(&p->mtx);
+	update_hold(p);
+	return 0;
 }
 
 void phone_ack_open(phone_link *p, const uint8_t sha1[20])
@@ -1594,10 +1822,23 @@ size_t phone_ui_text(phone_link *p, char *buf, size_t cap)
 	size_t len = 0;
 	char hex[41], hex2[41];
 	int i;
+	uint64_t h_ts = 0;
 #define EMIT(...) do { int w_ = snprintf(buf && len < cap ? buf + len : NULL, buf && len < cap ? cap - len : 0, __VA_ARGS__); if (w_ > 0) len += (size_t)w_; } while (0)
+	{   /* the stored copy's time (store_mtx must not be taken under mtx) */
+		uint8_t sha[20];
+		int has;
+		pthread_mutex_lock(&p->mtx);
+		has = p->on_pc_has;
+		memcpy(sha, p->on_pc_sha, 20);
+		pthread_mutex_unlock(&p->mtx);
+		if (has) { gbah_meta m; store_meta_locked(p, sha, &m, NULL, NULL); h_ts = m.has_data ? m.timestamp_ms : 0; }
+	}
 	pthread_mutex_lock(&p->mtx);
 	EMIT("S %d %s\n", atomic_load(&p->status), p->peer);
-	if (p->on_pc_has) { hex_of(p->on_pc_sha, hex); EMIT("H %s\n", hex); }
+	if (atomic_load(&p->status) == PL_ST_REFUSED && p->refuse_status) EMIT("X %d %u\n", p->refuse_status, p->refuse_proto);
+	if (p->pc_pref_known && p->pc_pref != (atomic_load(&p->prefer_newest) != 0)) EMIT("D %d %d\n", atomic_load(&p->prefer_newest) != 0, p->pc_pref);
+	for (i = 0; i < p->nplace; i++) { hex_of(p->place[i].sha1, hex2); EMIT("Q %s %d\n", hex2, p->place[i].waiting); }
+	if (p->on_pc_has) { hex_of(p->on_pc_sha, hex); EMIT("H %s %llu\n", hex, (unsigned long long)h_ts); }
 	if (p->handoff_pending) { hex_of(p->handoff_sha, hex); EMIT("W %s\n", hex); }
 	if (p->pc_playing) { hex_of(p->pc_sha, hex); EMIT("P 1 %s\n", hex); } else EMIT("P 0 -\n");
 	if (p->open_has) { hex_of(p->open_sha, hex); EMIT("O %s\n", hex); }

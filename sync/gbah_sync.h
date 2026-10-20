@@ -45,6 +45,12 @@ int gbah_ver_eq(const gbah_ver *a, const gbah_ver *b);
 /* local vs remote (what the OTHER side holds): what should happen to LOCAL's data. */
 int gbah_sync_decide(const gbah_meta *local, const gbah_meta *remote);
 
+/* "Keep the most recent": which of two diverging versions is newer. 1 = a, -1 = b, 0 = the very
+ * same version. Order: a side with data beats one without, then timestamp_ms, then the version
+ * counter, then the device id (memcmp) so the answer is deterministic and symmetric:
+ * newest(a,b) == -newest(b,a). Clocks of the two devices may differ: the loser is always backed up. */
+int gbah_sync_newest(const gbah_meta *a, const gbah_meta *b);
+
 /* New progress saved on this device. version = (dev, version.counter + 1); base unchanged. */
 void gbah_sync_advance(gbah_meta *m, const uint8_t dev[16], uint64_t ts_ms, uint32_t frame);
 /* Confirmed transfer of m's current version: base = version. */

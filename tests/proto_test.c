@@ -285,6 +285,23 @@ static void test_errors(void)
 		s.flags = GBAHP_PUSH_MIRROR; CHECK(gbahp_encode_state_push(&s, NULL, 0) != 0);
 		memset(&c, 0, sizeof c); c.cmd = 0; CHECK(gbahp_encode_control(&c, NULL, 0) == 0);
 		c.cmd = 99; CHECK(gbahp_encode_control(&c, NULL, 0) == 0);
+		c.cmd = GBAHP_CTL_LAST + 1; CHECK(gbahp_encode_control(&c, NULL, 0) == 0);
+		/* v3 codes: valid with an argument; a frame with an unknown command is refused on decode */
+		{
+			uint8_t buf[64], pl2[64];
+			size_t n, cmd;
+			gbahp_control d;
+			for (cmd = GBAHP_CTL_PLACE_PC; cmd <= GBAHP_CTL_SETTINGS_SET; cmd++) {
+				memset(&c, 0, sizeof c); c.cmd = (uint8_t)cmd; c.arg = GBAHP_SET_PREFER_NEWEST; memset(c.sha1, 0x31, 20);
+				n = gbahp_encode_control(&c, buf, sizeof buf);
+				CHECK(n == GBAHP_HEADER_SIZE + 25);
+				CHECK(gbahp_decode_control(buf + GBAHP_HEADER_SIZE, n - GBAHP_HEADER_SIZE, &d) == 0);
+				CHECK(d.cmd == cmd && d.arg == GBAHP_SET_PREFER_NEWEST && !memcmp(d.sha1, c.sha1, 20));
+			}
+			memcpy(pl2, buf + GBAHP_HEADER_SIZE, 25);
+			pl2[0] = GBAHP_CTL_LAST + 1;
+			CHECK(gbahp_decode_control(pl2, 25, &d) == GBAHP_E_RANGE);   /* negative control: the range check is live */
+		}
 	}
 	{
 		gbahp_state_push o; uint8_t pl[20 + 8 + 16 + 16 + 8 + 1 + 8 + 4 + 12];
@@ -308,6 +325,10 @@ static void test_compat(void)
 	b.core_version = gbahp_str_c("");
 	CHECK(gbahp_hello_compat(&a, &b) == GBAHP_ACK_CORE_MISMATCH);
 	b.core_version = a.core_version; b.proto_version = GBAHP_VERSION + 1;
+	CHECK(gbahp_hello_compat(&a, &b) == GBAHP_ACK_PROTO_MISMATCH);
+	/* the previous release (v2: the phone that resumed by itself after the cable was pulled) is refused */
+	CHECK(GBAHP_VERSION == 3);
+	b.proto_version = 2;
 	CHECK(gbahp_hello_compat(&a, &b) == GBAHP_ACK_PROTO_MISMATCH);
 }
 

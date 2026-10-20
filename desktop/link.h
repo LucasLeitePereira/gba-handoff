@@ -28,13 +28,16 @@ public:
 	bool port_busy() const { return port_busy_.load(); }
 	std::string device() const;                          // connected phone name, "" = none
 	std::string note() const;                            // adb note
+	// Why the last phone was refused at HELLO ("" = none); cleared by the next accepted connection.
+	void set_refusal(const std::string &why);
+	std::string refusal() const;
 	bool connected() const { return connected_.load(); }
 	unsigned generation() const { return gen_.load(); }
 	std::string title() const;
 
 private:
 	mutable std::mutex m_;
-	std::string device_, note_;
+	std::string device_, note_, refusal_;
 	std::atomic<bool> connected_{false};
 	std::atomic<bool> port_busy_{false};
 	std::atomic<unsigned> gen_{1};
@@ -89,7 +92,8 @@ public:
 	bool start(const ServerOptions &opt); // false if the port cannot be bound
 	void stop();
 	unsigned sessions_ended() const { return ended_.load(); }
-	uint32_t remote_keys() const { return keys_.load(); } // latest INPUT from the phone (phase 5: control mode)
+	uint32_t remote_keys() const { return keys_.load(); } // latest INPUT from the phone (control mode)
+	void clear_keys() { keys_ = 0; }                      // the game left Playing: no key may stay held
 
 	bool poll(Event &e);                  // main thread: next event, false if none
 	// Queues one frame for the phone (never blocks). droppable frames are discarded when more

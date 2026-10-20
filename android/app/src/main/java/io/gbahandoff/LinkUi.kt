@@ -25,19 +25,101 @@ object LinkUi {
         setOnClickListener { onClick() }
     }
 
+    /**
+     * Drives a [ChoicePanel] from the engine state: the "continue on" question (per game) wins over the
+     * "settings differ" one. Answers: key "p:<sha>" (first = phone) or "s" (first = keep the newest).
+     */
+    fun updateChoice(panel: ChoicePanel, st: LinkState, titleOf: (String) -> String) {
+        val place = st.places.entries.firstOrNull()
+        val d = st.settingsDiff
+        when {
+            place != null -> panel.show("p:" + place.key, "Continuar no:", titleOf(place.key),
+                "Celular", "PC", enabled = !place.value)
+            d != null -> panel.show("s", "As configura\u00e7\u00f5es dos dois aparelhos s\u00e3o diferentes",
+                "Sempre manter a vers\u00e3o mais recente: celular ${if (d.first) "ligado" else "desligado"}, PC ${if (d.second) "ligado" else "desligado"}",
+                "Usar \u201cmais recente\u201d", "Usar \u201cperguntar\u201d")
+            else -> panel.hide()
+        }
+    }
+
+    fun answer(ctx: Context, key: String, first: Boolean) {
+        if (key.startsWith("p:")) LinkClient.place(key.substring(2), !first)
+        else if (key == "s") LinkClient.chooseSettings(ctx, first)
+    }
+
     fun label(ctx: Context, size: Float = 12f, color: Int = Color.WHITE) = TextView(ctx).apply {
         textSize = size; setTextColor(color); gravity = Gravity.CENTER
     }
 }
 
+/** What the "game is on the PC" screens say (pure; shared by the game and list screens). */
+object OnPcText {
+    /** Line under the title: synchronised (cable) or not (cable out), with the time of the last copy. */
+    fun sync(connected: Boolean, ts: Long): String {
+        val t = if (ts > 0) Fmt.dateTime(ts) else "?"
+        return if (connected) "sincronizado $t" else "n\u00e3o sincronizado (\u00faltima c\u00f3pia $t)"
+    }
+    fun refusal(status: Int, pcProto: Int): String = when (status) {
+        1 -> "O PC usa outra vers\u00e3o do protocolo (v$pcProto): atualize o app do PC e o do celular."
+        2 -> "O emulador (mGBA) do PC \u00e9 diferente do deste celular: atualize o app do PC e o do celular."
+        else -> "O PC recusou a conex\u00e3o."
+    }
+}
+
 /**
- * "Jogando no PC": a compact, semi-transparent pill (state + "Voltar") that sits in a free corner of
- * the game picture. The container is NOT clickable, so touches outside the chip go to the pad under
- * it; the caller places it away from the pad controls (see [Placement]).
+ * Full-screen "No PC" (black: the phone is not emulating and shows no game picture): the sync state, "Voltar
+ * para o celular", the optional "Usar como controle" switch and, with the cable out, "Jogar aqui mesmo assim".
  */
-class OnPcOverlay(ctx: Context, onReturn: () -> Unit) : LinearLayout(ctx) {
+class OnPcScreen(
+    private val ctx: Context,
+    onReturn: () -> Unit, onPlayHere: () -> Unit, onControl: (Boolean) -> Unit,
+) : FrameLayout(ctx) {
+    private val title = LinkUi.label(ctx, 15f)
+    private val sub = LinkUi.label(ctx, 11f, 0xCCFFFFFF.toInt())
+    private val back = LinkUi.chip(ctx, "Voltar para o celular", onReturn)
+    private val here = LinkUi.chip(ctx, "Jogar aqui mesmo assim", onPlayHere)
+    private val ctl = android.widget.Switch(ctx).apply {
+        text = "Usar como controle"; textSize = 12f; setTextColor(Color.WHITE)
+    }
+    private var quiet = false
+
+    init {
+        setBackgroundColor(0xFF000000.toInt())
+        isClickable = true
+        val col = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
+        col.addView(title)
+        col.addView(sub, LinearLayout.LayoutParams(-2, -2).apply { topMargin = LinkUi.dp(ctx, 2f) })
+        col.addView(ctl, LinearLayout.LayoutParams(-2, -2).apply { topMargin = LinkUi.dp(ctx, 10f) })
+        col.addView(back, LinearLayout.LayoutParams(-2, -2).apply { topMargin = LinkUi.dp(ctx, 10f) })
+        col.addView(here, LinearLayout.LayoutParams(-2, -2).apply { topMargin = LinkUi.dp(ctx, 6f) })
+        addView(col, LayoutParams(-2, -2, Gravity.CENTER))
+        ctl.setOnCheckedChangeListener { _, on -> if (!quiet) onControl(on) }
+        visibility = GONE
+    }
+
+    fun show(connected: Boolean, ts: Long, waitingReturn: Boolean, control: Boolean) {
+        visibility = VISIBLE
+        getChildAt(0).visibility = VISIBLE
+        title.text = if (connected) "No PC" else "O jogo continua no PC"
+        sub.text = if (waitingReturn) "Trazendo de volta..." else OnPcText.sync(connected, ts)
+        back.visibility = if (connected) VISIBLE else GONE
+        back.isEnabled = !waitingReturn; back.alpha = if (waitingReturn) 0.5f else 1f
+        here.visibility = if (connected) GONE else VISIBLE
+        ctl.visibility = if (connected) VISIBLE else GONE
+        quiet = true; ctl.isChecked = control; quiet = false
+    }
+    fun hide() { visibility = GONE }
+    /** Control mode: keep the black, drop the card (the pad and the pill are on top). */
+    fun hideCard() { getChildAt(0).visibility = GONE }
+}
+
+/**
+ * Control mode: the black screen shows only the pad; this compact, semi-transparent pill (state + "Sair do
+ * controle") sits in a free corner. The container is NOT clickable so touches elsewhere reach the pad.
+ */
+class OnPcPill(ctx: Context, onExit: () -> Unit) : LinearLayout(ctx) {
     private val sub = LinkUi.label(ctx, 11f, 0xE6FFFFFF.toInt())
-    private val btn = LinkUi.chip(ctx, "Voltar ao celular", onReturn)
+    private val btn = LinkUi.chip(ctx, "Sair do controle", onExit)
 
     init {
         orientation = HORIZONTAL
@@ -50,13 +132,43 @@ class OnPcOverlay(ctx: Context, onReturn: () -> Unit) : LinearLayout(ctx) {
         visibility = GONE
     }
 
-    fun show(waitingReturn: Boolean) {
+    fun show(connected: Boolean, ts: Long) {
         visibility = VISIBLE
-        sub.text = if (waitingReturn) "Trazendo de volta..." else "No PC \u2022 controle ativo"
-        btn.isEnabled = !waitingReturn
-        btn.alpha = if (waitingReturn) 0.5f else 1f
+        sub.text = "No PC \u2022 " + OnPcText.sync(connected, ts).substringBefore(" (")
     }
     fun hide() { visibility = GONE }
+}
+
+/** A two-way question over everything: "Continuar no: Celular | PC", or which default setting to use. */
+class ChoicePanel(private val ctx: Context, private val onChoice: (key: String, first: Boolean) -> Unit) : FrameLayout(ctx) {
+    private val title = LinkUi.label(ctx, 14f)
+    private val sub = LinkUi.label(ctx, 11f, 0xCCFFFFFF.toInt())
+    private val a = LinkUi.chip(ctx, "") { key?.let { onChoice(it, true) } }
+    private val b = LinkUi.chip(ctx, "") { key?.let { onChoice(it, false) } }
+    private var key: String? = null
+
+    init {
+        setBackgroundColor(0xF0000000.toInt())
+        isClickable = true
+        val col = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
+        col.addView(title)
+        col.addView(sub, LinearLayout.LayoutParams(-2, -2).apply { topMargin = LinkUi.dp(ctx, 4f) })
+        val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+        row.addView(a, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = LinkUi.dp(ctx, 8f) })
+        row.addView(b, LinearLayout.LayoutParams(-2, -2))
+        col.addView(row, LinearLayout.LayoutParams(-2, -2).apply { topMargin = LinkUi.dp(ctx, 12f) })
+        addView(col, LayoutParams(-2, -2, Gravity.CENTER).apply { leftMargin = LinkUi.dp(ctx, 12f); rightMargin = LinkUi.dp(ctx, 12f) })
+        visibility = GONE
+    }
+
+    fun show(k: String, t: String, s: String, first: String, second: String, enabled: Boolean = true) {
+        key = k; visibility = VISIBLE
+        title.text = t; sub.text = s; a.text = first; b.text = second
+        a.isEnabled = enabled; b.isEnabled = enabled
+        a.alpha = if (enabled) 1f else 0.5f; b.alpha = a.alpha
+    }
+    fun hide() { visibility = GONE; key = null }
+    val shown: Boolean get() = visibility == VISIBLE
 }
 
 /** Both versions of a game side by side; the user keeps one. The loser becomes a backup (3 kept). */

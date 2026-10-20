@@ -59,6 +59,7 @@ std::vector<uint8_t> encode_push(const gbah_meta &m, uint8_t flags, const void *
 Hub::Hub(gbah_core *core, Library &lib, DiskQueue &disk, Server &server, Status &st, const HubOptions &opt)
     : core_(core), lib_(lib), disk_(disk), server_(server), st_(st), opt_(opt)
 {
+	settings_ = lib_.load_settings();
 }
 
 bool Hub::osd_active() const { return !osd_.empty() && (int32_t)(osd_until_ - now_ms()) > 0; }
@@ -78,8 +79,23 @@ std::string Hub::mode_text() const
 	case Mode::Conflict: return "Conflito: resolva no celular";
 	case Mode::Returning: return "Enviando para o celular...";
 	case Mode::WaitPhone: return "Jogando no celular";
+	case Mode::AwaitPlace: return connected_ ? "Escolha no celular" : "Pausado (sem cabo)";
 	}
 	return "";
+}
+
+std::string Hub::pending_text() const
+{
+	return settings_pending_ && connected_ ? "Configuracoes diferentes: escolha no celular" : "";
+}
+
+void Hub::set_mode(Mode m, const char *why)
+{
+	static const char *const names[] = { "Menu", "Playing", "Conflict", "Returning", "WaitPhone", "AwaitPlace" };
+	if (m != mode_) SDL_Log("hub: mode %s -> %s (%s)", names[(int)mode_], names[(int)m], why);
+	// Single owner: whatever the phone was holding down must not outlive the time the PC plays.
+	if (mode_ == Mode::Playing && m != Mode::Playing) server_.clear_keys();
+	mode_ = m;
 }
 
 // ---------------------------------------------------------------- snapshots & pushes
@@ -266,7 +282,8 @@ bool Hub::load_rom(GameInfo *g)
 void Hub::enter_playing(GameInfo *g)
 {
 	cur_ = g;
-	mode_ = Mode::Playing;
+	set_mode(Mode::Playing, "playing");
+	server_.clear_keys();   // a late INPUT of a previous period must not press a key in the new one
 	dirty_ = false;
 	sram_frames_ = 0;
 	void *sv = nullptr;
@@ -289,7 +306,7 @@ bool Hub::open_game(const uint8_t sha1[20])
 		close_game();
 	}
 	disk_.wait_idle();   // the files must reflect every snapshot queued so far
-	if (!load_rom(g)) { say("ROM invalida"); mode_ = Mode::Menu; cur_ = nullptr; return false; }
+	if (!load_rom(g)) { say("ROM invalida"); set_mode(Mode::Menu, "invalid ROM"); cur_ = nullptr; return false; }
 
 	void *st = nullptr, *sv = nullptr;
 	size_t sn = 0, vn = 0;
@@ -324,7 +341,7 @@ void Hub::close_game()
 		if (connected_ && mode_ == Mode::Playing) mirror_now();
 		else checkpoint_if_dirty();
 	}
-	mode_ = Mode::Menu;
+	set_mode(Mode::Menu, "game closed");
 	cur_ = nullptr;
 	send_pc_status();
 }
@@ -340,17 +357,19 @@ void Hub::quick_load()
 {
 	if (!cur_ || (mode_ != Mode::Playing && mode_ != Mode::Conflict)) return;
 	GameInfo *g = cur_;
-	mode_ = Mode::Menu;
+	set_mode(Mode::Menu, "quick load");
 	cur_ = nullptr;
 	open_game(g->sha1);
 }
 
+// Without a cable nobody can say where to continue: the user at the PC decides (Enter). The game is
+// reloaded from the store, which holds exactly what was agreed (the resolved / handed-over version).
 void Hub::resume_local()
 {
-	if (mode_ != Mode::WaitPhone || !cur_) return;
-	if (connected_) { say("O celular esta jogando: devolva por la"); return; }
+	if ((mode_ != Mode::WaitPhone && mode_ != Mode::AwaitPlace) || !cur_) return;
+	if (connected_) { say(mode_ == Mode::WaitPhone ? "O celular esta jogando: devolva por la" : "Escolha no celular onde continuar"); return; }
 	GameInfo *g = cur_;
-	mode_ = Mode::Menu;
+	set_mode(Mode::Menu, "resume without a cable");
 	cur_ = nullptr;
 	open_game(g->sha1);
 }
@@ -391,7 +410,7 @@ bool Hub::load_into_core(GameInfo *g, const PushData &p)
 	if (rc != 0) {
 		SDL_Log("hub: the received state could not be loaded (rc=%d)", rc);
 		rom_in_core_ = false;
-		mode_ = Mode::Menu;
+		set_mode(Mode::Menu, "state could not be loaded");
 		cur_ = nullptr;
 		return false;
 	}
@@ -476,6 +495,9 @@ void Hub::on_connected(const std::string &name)
 	inflight_.clear();
 	checkpoint_if_dirty();    // the library must describe the game as it is right now
 	say("Conectado: " + name);
+	phone_settings_known_ = false;
+	settings_pending_ = false;
+	send_settings();
 	send_library();
 	send_pc_status();
 }
@@ -486,12 +508,14 @@ void Hub::on_disconnected()
 	phone_lib_.clear();
 	held_.clear();
 	inflight_.clear();
+	phone_settings_known_ = false;
+	settings_pending_ = false;
 	for (GameInfo &g : lib_.games()) g.conflict = false;
-	if (mode_ == Mode::Conflict || mode_ == Mode::Returning) {   // nobody to wait for: keep playing alone
-		mode_ = Mode::Playing;
-		next_periodic_ = now_ms() + opt_.mirror_ms;
-		audio_flush_ = true;
-		say("Cabo desconectado: continuando so no PC");
+	// Paused states have no owner to hand the game to: the PC does NOT restart on its own (that was the
+	// "two devices playing" bug). The user decides with Enter; a game that was Playing simply goes on.
+	if (mode_ == Mode::Conflict || mode_ == Mode::Returning || mode_ == Mode::AwaitPlace) {
+		set_mode(Mode::AwaitPlace, "cable dropped while paused");
+		say("Cabo desconectado: Enter continua aqui");
 	} else if (mode_ == Mode::Playing) {
 		say("Cabo desconectado: continuando so no PC");
 	}
@@ -537,8 +561,8 @@ void Hub::on_phone_library(const std::vector<gbahp_lib_entry> &lib)
 void Hub::mark_conflict(GameInfo *g)
 {
 	g->conflict = true;
-	if (cur_ == g && (mode_ == Mode::Playing || mode_ == Mode::Returning)) {
-		mode_ = Mode::Conflict;
+	if (cur_ == g && (mode_ == Mode::Playing || mode_ == Mode::Returning || mode_ == Mode::AwaitPlace)) {
+		set_mode(Mode::Conflict, "version conflict");
 		send_pc_status();
 	}
 	say("Conflito em " + g->title + ": resolva no celular");
@@ -585,6 +609,7 @@ void Hub::on_push(const std::shared_ptr<PushData> &p)
 	// (same version, e.g. a repeated mirror) must never rewind a game the PC is playing.
 	const bool live = g == cur_ && (mode_ == Mode::Playing || mode_ == Mode::Conflict);
 	const bool take = handoff || (live && store);
+	const bool was_conflict = g == cur_ && mode_ == Mode::Conflict;
 	if (take && !load_into_core(g, *p)) {
 		send_ack(p->sha1, p->version, GBAHP_STATE_ACK_ERROR);
 		say("Nao foi possivel carregar o estado recebido");
@@ -609,9 +634,22 @@ void Hub::on_push(const std::shared_ptr<PushData> &p)
 		g->conflict = false;
 		send_ack(p->sha1, p->version, GBAHP_STATE_ACK_OK);
 	}
-	if (take) {
+	if (take && resolved && !handoff) {
+		// A resolution ends with BOTH sides paused: the phone asks where to continue. The PC does not
+		// go back to Playing here (that was the "two devices playing" bug).
+		cur_ = g;
+		dirty_ = false;
+		audio_flush_ = true;
+		set_mode(Mode::AwaitPlace, "conflict resolved, version loaded");
+		send_pc_status();
+		say("Versao escolhida: escolha onde continuar no celular");
+	} else if (take) {
 		enter_playing(g);
 		say(handoff ? "Jogo recebido do celular" : "Versao escolhida carregada");
+	} else if (resolved && was_conflict) {   // the same version on both sides: nothing to load, still no owner
+		g->conflict = false;
+		set_mode(Mode::AwaitPlace, "conflict closed");
+		send_pc_status();
 	}
 }
 
@@ -648,17 +686,18 @@ void Hub::on_ack(const gbahp_state_ack &a)
 			});
 		}
 		if (in.kind == Kind::Return && mode_ == Mode::Returning && cur_ == g) {
-			mode_ = Mode::WaitPhone;
+			set_mode(Mode::WaitPhone, "game handed to the phone");
 			send_pc_status();
 			say("Jogando no celular");
 		} else if (in.kind == Kind::Fetch) {
 			g->conflict = false;
-			if (mode_ == Mode::Conflict && cur_ == g) {
-				mode_ = Mode::Playing;
-				next_periodic_ = now_ms() + opt_.mirror_ms;
+			if ((mode_ == Mode::Conflict || mode_ == Mode::Playing) && cur_ == g) {
+				// the phone took our version: both sides paused until it says where to continue
+				dirty_ = false;
 				audio_flush_ = true;
+				set_mode(Mode::AwaitPlace, "our version was taken");
 				send_pc_status();
-				say("Conflito resolvido: versao do PC mantida");
+				say("Versao do PC mantida: escolha onde continuar no celular");
 			}
 		}
 		break;
@@ -673,17 +712,17 @@ void Hub::on_ack(const gbahp_state_ack &a)
 			else push_stored(g, in.flags, in.kind);
 			if (Inflight *n = find_inflight(g->sha1, v)) n->retried = true;
 		} else if (in.kind == Kind::Return && mode_ == Mode::Returning) {
-			mode_ = Mode::Playing;
+			set_mode(Mode::Playing, "phone refused the game (no ROM)");
 			say("O celular nao aceitou o jogo (sem ROM)");
 		}
 		break;
 	case GBAHP_STATE_ACK_STALE:
 		say("O celular ja tem uma versao mais nova");
-		if (in.kind == Kind::Return && mode_ == Mode::Returning) mode_ = Mode::Playing;
+		if (in.kind == Kind::Return && mode_ == Mode::Returning) set_mode(Mode::Playing, "phone already has a newer version");
 		break;
 	default:
 		say("O celular recusou o estado");
-		if (in.kind == Kind::Return && mode_ == Mode::Returning) mode_ = Mode::Playing;
+		if (in.kind == Kind::Return && mode_ == Mode::Returning) set_mode(Mode::Playing, "phone refused the state");
 		break;
 	}
 }
@@ -693,7 +732,7 @@ void Hub::on_control(const gbahp_control &c)
 	GameInfo *g = lib_.find(c.sha1);
 	switch (c.cmd) {
 	case GBAHP_CTL_RETURN:
-		if (g && g == cur_ && mode_ == Mode::Playing) request_return();
+		if (g && g == cur_ && (mode_ == Mode::Playing || mode_ == Mode::AwaitPlace)) request_return();
 		else if (g && g->meta.has_data && !(g == cur_ && mode_ == Mode::Conflict)) push_stored(g, GBAHP_PUSH_HANDOFF, Kind::Sync);
 		break;
 	case GBAHP_CTL_FETCH:
@@ -706,6 +745,10 @@ void Hub::on_control(const gbahp_control &c)
 			push_stored(g, GBAHP_PUSH_RESOLVED, Kind::Fetch);
 		}
 		break;
+	case GBAHP_CTL_PLACE_PC: place_pc(g); break;
+	case GBAHP_CTL_PLACE_PHONE: place_phone(g); break;
+	case GBAHP_CTL_SETTINGS: on_phone_settings(c.arg, false); break;
+	case GBAHP_CTL_SETTINGS_SET: on_phone_settings(c.arg, true); break;
 	case GBAHP_CTL_ROM_UNAVAILABLE: {
 		auto it = held_.find(hex_of(c.sha1));
 		if (it != held_.end()) {
@@ -720,11 +763,79 @@ void Hub::on_control(const gbahp_control &c)
 	}
 }
 
+// ---------------------------------------------------------------- where to continue / settings
+
+// The phone chose the PC after a resolution. The PC plays what the store holds (the resolved version).
+void Hub::place_pc(GameInfo *g)
+{
+	if (!g || !connected_ || !lib_.has_rom(g->sha1)) return;
+	if (g->conflict) { say("Conflito em aberto: resolva no celular"); return; }
+	if (mode_ == Mode::Playing && cur_ == g) { send_pc_status(); return; }   // already here
+	if ((mode_ == Mode::Playing || mode_ == Mode::Conflict || mode_ == Mode::Returning) && cur_ != g) {
+		say("O PC esta ocupado com outro jogo");
+		return;
+	}
+	cur_ = nullptr;
+	set_mode(Mode::Menu, "place on the PC");
+	open_game(g->sha1);   // reloads the stored version and enters Playing (announces PC_STATUS)
+}
+
+// The phone chose itself: the PC stays paused on the game and shows that it is being played there.
+void Hub::place_phone(GameInfo *g)
+{
+	if (!g) return;
+	if (cur_ == g && mode_ == Mode::AwaitPlace) {
+		set_mode(Mode::WaitPhone, "continues on the phone");
+		send_pc_status();
+		say("Jogando no celular");
+	} else {
+		SDL_Log("hub: PLACE_PHONE ignored (mode %d)", (int)mode_);
+	}
+}
+
+std::string settings_note(bool on) { return on ? "Sempre manter a versao mais recente: ligado" : "Perguntar em caso de conflito"; }
+
+void Hub::send_settings()
+{
+	server_.send(wire::control(GBAHP_CTL_SETTINGS, nullptr, settings_.prefer_newest ? GBAHP_SET_PREFER_NEWEST : 0u));
+}
+
+// bits = the phone's settings. chosen = SETTINGS_SET: the user picked them as the default of both.
+void Hub::on_phone_settings(uint32_t bits, bool chosen)
+{
+	const bool pn = (bits & GBAHP_SET_PREFER_NEWEST) != 0;
+	if (chosen) {
+		settings_.prefer_newest = pn;
+		if (!lib_.save_settings(settings_)) SDL_Log("hub: could not save settings.ini");
+		phone_settings_known_ = true;
+		phone_prefer_newest_ = pn;
+		settings_pending_ = false;
+		say(settings_note(pn));
+		return;
+	}
+	phone_settings_known_ = true;
+	phone_prefer_newest_ = pn;
+	settings_pending_ = pn != settings_.prefer_newest;
+	if (settings_pending_) say("Configuracoes diferentes: escolha no celular");
+}
+
+void Hub::set_prefer_newest(bool on)
+{
+	if (settings_.prefer_newest == on) return;
+	settings_.prefer_newest = on;
+	if (!lib_.save_settings(settings_)) say("Nao foi possivel salvar as configuracoes");
+	else say(settings_note(on));
+	if (connected_) {
+		send_settings();   // the phone compares and asks the user if they differ
+		settings_pending_ = phone_settings_known_ && phone_prefer_newest_ != on;
+	}
+}
+
 void Hub::request_return()
 {
 	if (!connected_) { say("Nenhum celular conectado"); return; }
 	if (mode_ == Mode::Conflict) { say("Resolva o conflito no celular primeiro"); return; }
-	if (mode_ != Mode::Playing || !cur_) return;
+	if ((mode_ != Mode::Playing && mode_ != Mode::AwaitPlace) || !cur_) return;
 	SnapPtr s = take_snapshot();
 	if (!s) { say("Falha ao salvar o estado"); return; }
 	auto it = phone_lib_.find(hex_of(cur_->sha1));
@@ -735,7 +846,7 @@ void Hub::request_return()
 	inflight_.erase(std::remove_if(inflight_.begin(), inflight_.end(), [](const Inflight &f) { return f.kind == Kind::Mirror; }),
 	                inflight_.end());
 	if (!push_snapshot(s, GBAHP_PUSH_HANDOFF, Kind::Return)) { say("Falha ao enviar para o celular"); return; }
-	mode_ = Mode::Returning;
+	set_mode(Mode::Returning, "handing the game to the phone");
 	send_pc_status();
 	say("Enviando para o celular...");
 }
