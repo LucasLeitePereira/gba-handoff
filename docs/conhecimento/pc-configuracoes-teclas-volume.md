@@ -2,7 +2,7 @@
 titulo: Configurações do PC: teclas e volume são locais; teclas reservadas e a regra de troca
 tipo: convencao
 gerado_por: claude-sonnet-5-5
-commit: 2199055
+commit: 8b8c4de
 arquivos: desktop/library.cpp, desktop/library.h, desktop/handoff.cpp, desktop/main.cpp
 revisado_por: claude-opus-5-5
 revisado_em: 2026-10-20T19:22:42Z

@@ -2,7 +2,7 @@
 titulo: SDL3 no PC - viewport com escala desloca o jogo; sem logical presentation
 tipo: armadilha
 gerado_por: claude-sonnet-5-5
-commit: 2199055
+commit: 8b8c4de
 arquivos: desktop/main.cpp
 revisado_por: claude-opus-5-5
 revisado_em: 2026-10-20T19:23:29Z

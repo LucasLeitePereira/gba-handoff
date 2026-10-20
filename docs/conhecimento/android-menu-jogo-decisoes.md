@@ -2,7 +2,7 @@
 titulo: Menu do jogo no Android (botão separado, pausa, engrenagem na tela inicial)
 tipo: decisao
 gerado_por: claude-sonnet-5-5
-commit: a4c2c43
+commit: 428ea59
 arquivos: android/app/src/main/java/io/gbahandoff/GameMenu.kt, android/app/src/main/java/io/gbahandoff/GameActivity.kt, android/app/src/main/java/io/gbahandoff/PadLayout.kt, android/app/src/main/java/io/gbahandoff/Placement.kt, android/app/src/main/java/io/gbahandoff/MainActivity.kt
 revisado_por: claude-opus-5-5
 revisado_em: 2026-10-20T19:30:56Z

@@ -2,7 +2,7 @@
 titulo: Fluxos do handoff no PC - dono único, AwaitPlace, conflito, ACK, recarga e fila de saída
 tipo: decisao
 gerado_por: claude-sonnet-5-5
-commit: 74f70ce
+commit: d7240e6
 arquivos: desktop/handoff.cpp, desktop/handoff.h, desktop/link.cpp, desktop/main.cpp, desktop/library.h
 revisado_por: claude-opus-5-5
 revisado_em: 2026-10-20T17:52:55Z

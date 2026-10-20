@@ -2,7 +2,7 @@
 titulo: Migração do store legado e como instalar o APK sem perder o save
 tipo: operacao
 gerado_por: claude-sonnet-5-5
-commit: 50fe505
+commit: 0b51017
 arquivos: android/app/src/main/cpp/phone_link.c, android/app/src/main/java/io/gbahandoff/LinkClient.kt, tests/phone_migrate_test.c
 revisado_por: claude-opus-5-5
 revisado_em: 2026-10-20T13:42:14Z

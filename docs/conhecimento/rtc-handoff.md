@@ -2,7 +2,7 @@
 titulo: RTC no handoff - o jogo segue o relógio do aparelho, sem offset
 tipo: decisao
 gerado_por: claude-sonnet-5-5
-commit: f84dedf
+commit: 071fa2c
 arquivos: core/gbah_core.c, third_party/mgba/src/core/interface.c, third_party/mgba/src/gba/cart/gpio.c, third_party/mgba/src/gba/core.c
 revisado_por: claude-opus-5-5
 revisado_em: 2026-10-20T12:38:26Z

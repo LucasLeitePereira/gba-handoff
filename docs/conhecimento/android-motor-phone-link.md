@@ -2,7 +2,7 @@
 titulo: Por que o lado Android é um motor C sem JNI (phone_link), como ele se protege e como segue o dono único
 tipo: decisao
 gerado_por: claude-sonnet-5-5
-commit: 74f70ce
+commit: d7240e6
 arquivos: android/app/src/main/cpp/phone_link.c, android/app/src/main/cpp/phone_link.h, android/app/src/main/cpp/core_host.c, android/app/src/main/cpp/link_jni.c, android/app/src/main/cpp/jni_bridge.c, android/app/src/main/java/io/gbahandoff/LinkClient.kt
 revisado_por: claude-opus-5-5
 revisado_em: 2026-10-20T17:51:10Z

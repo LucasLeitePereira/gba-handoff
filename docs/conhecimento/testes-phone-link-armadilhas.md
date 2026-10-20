@@ -2,7 +2,7 @@
 titulo: Armadilhas dos testes do motor do celular (comparar states, save da ROM de teste, TSan)
 tipo: armadilha
 gerado_por: claude-sonnet-5-5
-commit: 74f70ce
+commit: d7240e6
 arquivos: tests/phone_link_test.c, tests/phone_sim.h
 revisado_por: claude-opus-5-5
 revisado_em: 2026-10-20T17:57:30Z

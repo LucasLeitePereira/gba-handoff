@@ -2,7 +2,7 @@
 titulo: O padrão roms/ do .gitignore escondia as ROMs de teste em tests/roms/
 tipo: armadilha
 gerado_por: claude-sonnet-5-5
-commit: 74f70ce
+commit: d7240e6
 arquivos: .gitignore, tests/roms/build.sh, tests/roms/gbah_test.s, tests/roms/README.md, tests/CMakeLists.txt
 revisado_por: claude-opus-5-5
 revisado_em: 2026-10-20T17:53:54Z

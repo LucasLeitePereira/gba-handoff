@@ -2,7 +2,7 @@
 titulo: Teste manual do handoff no Windows: roteiro e falsas falhas
 tipo: operacao
 gerado_por: claude-sonnet-5-5
-commit: 2199055
+commit: 8b8c4de
 arquivos: desktop/main.cpp, tools/fetch-adb-windows.sh, tools/package-windows.sh, tests/fake_adb.sh, tests/CMakeLists.txt
 revisado_por: claude-opus-5-5
 revisado_em: 2026-10-20T19:21:58Z
