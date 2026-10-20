@@ -33,4 +33,5 @@ _(atualizado pelo sênior após cada tarefa)_
 - [Fase 3] 4/5 aprovados; 1 rejeitado com razão: relato de teste/validação ("funcionou no celular") não é conhecimento — é status. Só registre resultado de teste se revelar sintoma, causa ou condição de falha. (Erro de instrução do sênior; não repetir.)
 - [Fase 3] Ótimo achado: bug real em código (bool retornando -1). Continue relatando bugs que encontrar ao verificar, sem corrigir.
 - [Commit] O repo agora tem commits: use `git rev-parse --short HEAD` no campo `commit` (não mais `sem-commit`).
+- [Fase 4a] Ótimo: corrigiu o material do dev (PC_STATUS não tem ordem fixa; TIMEOUT 120 só nos _san) e apontou doc antigo desatualizado. Ao documentar uma fase, procure também docs existentes que ela tornou obsoletos e proponha a nova versão na mesma entrega.
 - O revisor NÃO roda sozinho: após escrever, o sênior roda `docserver revisar`. Não espere o watcher.

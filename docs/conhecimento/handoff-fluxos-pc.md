@@ -1,0 +1,17 @@
+---
+titulo: Fluxos do handoff no PC - conflito, ACK, recarga do jogo e fila de saída
+tipo: decisao
+gerado_por: claude-sonnet-5-5
+commit: f84dedf
+arquivos: desktop/handoff.cpp, desktop/handoff.h, desktop/link.cpp, desktop/library.h
+revisado_por: claude-opus-5-5
+revisado_em: 2026-10-20T12:35:42Z
+parecer: Conferi as afirmações em desktop/handoff.cpp, link.cpp e library.h, e quase todas batem com o código: `on_disconnected` tira Conflict/Returning e volta a Playing; um RESOLVED grava quando `d != GBAH_SYNC_NOTHING`; `gbah_store_backup(..., 3)`; o ACK é postado no DiskQueue depois de `gbah_store_commit`, com ERROR se o commit falhar; `take = handoff || (live && store)`; `GBAHP_ROM_CHUNK` vale 256 KB; o limite do espelho é `kMaxDroppableQueue = 8u << 20` e só se aplica quando `flags == GBAHP_PUSH_MIRROR`.; Uma afirmação não bate: o texto diz que o contador `queued` 'conta mensagens'. Na verdade ele soma os BYTES dos frames da fila `msgs` (`queued += frame.size()`), e os pedaços de ROM ficam fora dele (fila `roms`). Corrigi isso.; Não repete os documentos aprovados. decisoes-arquitetura-plataforma só diz que 'o usuário escolhe; a outra vira backup', e protocolo-decisoes e link-armadilhas não tratam de ACK após commit, de rebobinar o jogo nem da Outbox.; O texto explica o porquê: o risco do ACK antecipado, o sintoma do bug de rebobinar, por que as mensagens pequenas furam a fila da ROM e por que o espelho pode ser descartado. Enxuguei a redação. Não há segredos nem dados pessoais.
+---
+
+# Fluxos do handoff no PC (Hub)
+
+- **O conflito se resolve no celular, não no PC.** Ao detectar CONFLICT, o PC pausa o jogo (modo Conflict), manda a THUMB da sua versão e espera. Se o celular quer a versão do PC, manda CONTROL(FETCH) e o PC responde com STATE_PUSH flag RESOLVED. Se quer a sua, faz um push RESOLVED; o PC passa a versão dele para backup (`gbah_store_backup`, mantém 3), grava a recebida e a carrega. Um RESOLVED vale sempre que a versão difere (`d != NOTHING`), sem exigir RECEIVE. Se o cabo cai em Conflict/Returning, `on_disconnected` volta o jogo a Playing: sem ninguém para decidir, o PC joga sozinho e o conflito reaparece na próxima conexão.
+- **STATE_ACK só depois do commit em disco.** O ACK de um push aceito vai para o mesmo `DiskQueue` (FIFO) que grava, logo depois do `gbah_store_commit`. Um ACK OK antes disso faria o celular marcar como base um estado que pode não existir se o PC cair. Se o commit falha, sai ACK ERROR. Pushes que não gravam nada (ex.: NOTHING) são confirmados na hora.
+- **Armadilha corrigida: um push sem mudança rebobinava o jogo.** Sintoma: com o jogo aberto, o personagem "pulava para trás" alguns segundos a cada espelho repetido (mesma versão), porque o PC recarregava o state do disco. Regra atual: `take = handoff || (live && store)`. O core só passa a seguir o que está gravado num HANDOFF explícito ou quando o push realmente substitui o que o PC tem (RECEIVE/RESOLVED).
+- **Fila de saída (Outbox) por sessão, com thread escritora própria**, para a thread principal nunca bloquear no socket. A ROM sai em pedaços de `GBAHP_ROM_CHUNK` (256 KB) e as mensagens pequenas (PONG, ACK, CONTROL) passam na frente entre um pedaço e outro. Sem isso, uma ROM de até 32 MiB seguraria ACKs e CONTROLs durante toda a transferência. O espelho é *descartável*: quando há mais de 8 MiB em mensagens na fila, `Server::send(..., droppable)` devolve false, para um link parado não esgotar a memória do PC. O limite conta os bytes da fila de mensagens; os pedaços de ROM, que ficam numa fila separada, não entram na conta.

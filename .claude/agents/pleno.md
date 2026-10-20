@@ -46,4 +46,7 @@ _(atualizado pelo sênior após cada tarefa)_
 - [Fase 2] VALIDADO no celular real pelo usuário: áudio correto, velocidade normal, retomada por state+sav no ponto exato. Não mexa no pacing por AAudio nem no save do onPause sem motivo forte.
 - [Fase 3] Excelente: controles negativos, --repeat until-fail:25, e simular o cliente JNI no host. Padrão a seguir em código de rede.
 - [Fase 3] Arquitetura de rede: proto/ em C compartilhado; cliente Android em C (link_jni.c); desktop em namespace `cable` (não `link`). Envio do servidor ainda single-thread → Fase 4 precisa de mutex.
+- [Fase 4a] Excelente: revisou o WIP alheio com olho crítico e achou bug real (push no-op voltava o jogo no tempo). Testes de processo filho: fork + PR_SET_PDEATHSIG + kill_all no atexit/sinais — padrão obrigatório.
+- [Fase 4a] Processos <defunct> com pai PID 1 são inofensivos aqui; filtre por estado Z ao checar órfãos.
+- [Fase 4a] Corrigiu um bug sem teste (on_push no-op): quando corrigir bug, acrescente um teste de regressão.
 - [Fase 0] A máquina tem só 3 GB de RAM e 8 núcleos: limite paralelismo (`-j4`) e Gradle (`org.gradle.jvmargs=-Xmx1g`, sem daemon).
