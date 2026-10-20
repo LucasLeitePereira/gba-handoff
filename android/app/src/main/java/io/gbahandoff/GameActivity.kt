@@ -3,6 +3,10 @@ package io.gbahandoff
 import android.app.Activity
 import android.os.Bundle
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.ParcelFileDescriptor
+import android.net.Uri
 import android.view.Gravity
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -11,23 +15,31 @@ import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.widget.FrameLayout
 import android.widget.Toast
+import java.io.File
 
 /**
  * Game screen. Lifecycle: load ROM (+ resume state/sav) in onCreate; emulation runs only between
  * onResume and onPause; onPause also writes state + .sav to internal storage (auto-save on exit).
  */
 class GameActivity : Activity(), SurfaceHolder.Callback {
-    private lateinit var store: SaveStore
     private lateinit var surface: SurfaceView
     private lateinit var root: FrameLayout
     private var sha1: String? = null
     private var padHost: PadHost? = null
     private var curW = 0
     private var curH = 0
+    private lateinit var roms: RomLibrary
+    private lateinit var onPcOverlay: OnPcOverlay
+    private lateinit var conflictPanel: ConflictPanel
+    private lateinit var notice: NoticeLine
+    private lateinit var sendBtn: View
+    private val ui = Handler(Looper.getMainLooper())
+    private val poll = object : Runnable {
+        override fun run() { refreshLink(); ui.postDelayed(this, POLL_MS) }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        store = SaveStore(filesDir.resolve("games"))
         root = FrameLayout(this).apply { setBackgroundColor(0xFF000000.toInt()) }
         surface = SurfaceView(this)
         surface.holder.addCallback(this)
@@ -36,26 +48,62 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
             if (editing) Native.stop() else if (sha1 != null) Native.start()
         }
         root.addView(padHost, FrameLayout.LayoutParams(-1, -1))
+        roms = LinkClient.boot(this)
+        // link UI above the pad: compact and semi-transparent
+        val dp = { v: Float -> LinkUi.dp(this, v) }
+        sendBtn = LinkUi.chip(this, "Enviar ao PC") { LinkClient.sendToPc() }.apply { visibility = View.GONE }
+        root.addView(sendBtn, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { topMargin = dp(6f); rightMargin = dp(6f) })
+        notice = NoticeLine(this)
+        root.addView(notice, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(6f) })
+        onPcOverlay = OnPcOverlay(this) { LinkClient.doReturn() }
+        root.addView(onPcOverlay, FrameLayout.LayoutParams(GBA_W, GBA_H, Gravity.TOP or Gravity.CENTER_HORIZONTAL))
+        conflictPanel = ConflictPanel(this) { h, keepPhone -> LinkClient.resolve(h, keepPhone) }
+        root.addView(conflictPanel, FrameLayout.LayoutParams(-1, -1))
         root.addOnLayoutChangeListener { _, l, t, r, b, _, _, _, _ -> layoutScreen(r - l, b - t) }
         setContentView(root)
         hideSystemBars()
 
         if (!Native.create()) return fail("Falha ao criar o core")
-        val uri = intent.data ?: return fail("Nenhuma ROM")
+        // a ROM picked now (uri) or one the library knows (sha1: received from the PC, or handed back)
+        val wanted = intent.getStringExtra(EXTRA_SHA1)
+        val source = intent.data?.toString() ?: wanted?.let { roms.find(it)?.source } ?: return fail("Nenhuma ROM")
         val rc = try {
-            contentResolver.openFileDescriptor(uri, "r")!!.use { Native.loadRomFd(it.fd) }
+            openRom(source)!!.use { Native.loadRomFd(it.fd) }
         } catch (e: Exception) { -1000 }
         if (rc != 0) return fail("ROM inválida ($rc)")
         val h = Native.romSha1()!!
         sha1 = h
-        resume(h)
+        if (wanted != null && wanted != h) return fail("ROM não confere com o jogo pedido")
+        if (roms.find(h) == null || intent.data != null) registerPicked(h, source)
+        // Continue where the player left off: the sync engine's store (state + sav, else the cold .sav)
+        if (Native.resumeStored() < 0) Toast.makeText(this, "Não foi possível retomar o progresso salvo", Toast.LENGTH_LONG).show()
     }
 
-    /** Continue where the player left off: state (+ sav) if any, else just the .sav. */
-    private fun resume(h: String) {
-        val sav = if (store.hasSav(h)) store.savPath(h) else null
-        if (store.hasState(h) && Native.restoreFiles(store.statePath(h), sav) == 0) return
-        if (sav != null) Native.loadSavFile(sav)
+    private fun openRom(source: String): ParcelFileDescriptor? =
+        if (source.startsWith("content://")) contentResolver.openFileDescriptor(Uri.parse(source), "r")
+        else ParcelFileDescriptor.open(File(source.removePrefix("file://")), ParcelFileDescriptor.MODE_READ_ONLY)
+
+    /** Remember where this ROM can be read again (the engine needs it to send the ROM to the PC). */
+    private fun registerPicked(h: String, source: String) {
+        Thread {
+            try {
+                val size = openRom(source)?.use { it.statSize } ?: return@Thread
+                val head = LinkClient.openSource(this, source)?.use { ins -> ByteArray(0xAC).also { var n = 0; while (n < it.size) { val r = ins.read(it, n, it.size - n); if (r < 0) break; n += r } } }
+                roms.register(RomLibrary.Rom(h, size, source, head?.let(RomLibrary::headerTitle) ?: ""))
+                LinkClient.publishRoms()
+            } catch (_: Exception) { }
+        }.also { it.isDaemon = true }.start()
+    }
+
+    private fun refreshLink() {
+        val h = sha1 ?: return
+        val st = LinkClient.state()
+        st.notices.lastOrNull()?.let { notice.say(it) }
+        val here = h in st.onPc
+        if (here) onPcOverlay.show(h in st.waiting) else onPcOverlay.hide()
+        sendBtn.visibility = if (st.status == LinkClient.CONNECTED && !here && h !in st.waiting && !conflictPanel.shown) View.VISIBLE else View.GONE
+        val c = st.conflicts.firstOrNull()
+        if (c != null) conflictPanel.show(c, roms.find(c.sha1)?.title?.ifBlank { null } ?: "jogo ${Fmt.shortSha(c.sha1)}") else conflictPanel.hide()
     }
 
     private fun fail(msg: String) {
@@ -75,6 +123,10 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         lp.topMargin = if (w > h) (h - lp.height) / 2 else 0
         surface.layoutParams = lp
         surface.holder.setFixedSize(lp.width, lp.height) // 1 buffer px == 1 screen px: no compositor scaling
+        (onPcOverlay.layoutParams as FrameLayout.LayoutParams).let {
+            it.width = lp.width; it.height = lp.height; it.gravity = lp.gravity; it.topMargin = lp.topMargin
+            onPcOverlay.layoutParams = it
+        }
     }
 
     @Suppress("DEPRECATION")
@@ -96,6 +148,7 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         hideSystemBars()
         LinkClient.onForeground(this)
         if (sha1 != null && padHost?.editing != true) Native.start()
+        ui.post(poll)
     }
 
     @Deprecated("Deprecated in Java")
@@ -105,14 +158,13 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
 
     override fun onPause() {
         super.onPause()
+        ui.removeCallbacks(poll)
         LinkClient.onBackground()
         Native.stop()
         Native.setKeys(0)
-        sha1?.let { h ->
-            // Native.* return codes: log-worthy but never crash on exit.
-            Native.saveStateFile(store.statePath(h))
-            Native.saveSavFile(store.savPath(h))
-        }
+        // Through the sync engine: state + .sav, new version, atomic. Skipped (1) when nothing changed or the
+        // game is being played on the PC (that copy is not ours to overwrite). Never crash on exit.
+        if (sha1 != null) Native.saveNow()
     }
 
     override fun onDestroy() {
@@ -124,5 +176,9 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
     override fun surfaceDestroyed(holder: SurfaceHolder) { Native.setSurface(null) }
 
-    private companion object { const val GBA_W = 240; const val GBA_H = 160 }
+    companion object {
+        const val EXTRA_SHA1 = "sha1"
+        private const val GBA_W = 240; private const val GBA_H = 160
+        private const val POLL_MS = 300L
+    }
 }

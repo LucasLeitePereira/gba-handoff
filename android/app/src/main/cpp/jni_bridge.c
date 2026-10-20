@@ -28,6 +28,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+#include "app_core.h"
 #include "gbah_core.h"
 
 #define TAG "gbah"
@@ -47,12 +48,16 @@ static struct {
 	int thread_on;              /* touched only by start()/stop() callers (UI thread) */
 	atomic_int run;
 	atomic_uint keys;
+	atomic_int hold;            /* the link engine froze the game (handed to the PC, conflict...) */
 	AAudioStream *stream;       /* emu thread only while running; opened by start() before the thread */
 	int32_t stream_buf_frames, stream_burst, stream_max_buf;
 	int32_t xruns;
 	int16_t abuf[ABUF_FRAMES * 2];
 	char sha1[41];
 } g = { .mtx = PTHREAD_MUTEX_INITIALIZER, .win_mtx = PTHREAD_MUTEX_INITIALIZER };
+
+static core_host_ctx g_ctx = { .core = &g.core, .mtx = &g.mtx, .hold = &g.hold };
+core_host_ctx *appcore_ctx(void) { return &g_ctx; }
 
 /* ------------------------------------------------------------ rendering */
 
@@ -191,6 +196,13 @@ static void *emu_main(void *arg)
 	while (atomic_load(&g.run)) {
 		size_t n;
 		pthread_mutex_lock(&g.mtx);
+		if (atomic_load_explicit(&g.hold, memory_order_relaxed)) {   /* frozen by the link engine: no frame */
+			struct timespec nap = { 0, 8000000L };
+			pthread_mutex_unlock(&g.mtx);
+			nanosleep(&nap, NULL);
+			clock_gettime(CLOCK_MONOTONIC, &next);
+			continue;
+		}
 		gbah_set_input(g.core, atomic_load_explicit(&g.keys, memory_order_relaxed));
 		gbah_run_frame(g.core);
 		n = gbah_audio_read(g.core, g.abuf, ABUF_FRAMES);
@@ -248,6 +260,7 @@ static int read_fd_all(int fd, void **out, size_t *size)
 
 static void stop_locked_free(void)
 {
+	link_jni_running(0);
 	if (g.thread_on) {
 		atomic_store(&g.run, 0);
 		pthread_join(g.thread, NULL);
@@ -267,6 +280,7 @@ J(jboolean, create)(JNIEnv *env, jclass cls)
 	g.core = gbah_create(AUDIO_RATE);
 	g.sha1[0] = 0;
 	atomic_store(&g.keys, 0);
+	atomic_store(&g.hold, 0);
 	return g.core ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -280,7 +294,9 @@ J(void, destroy)(JNIEnv *env, jclass cls)
 	pthread_mutex_lock(&g.mtx);
 	gbah_destroy(g.core);
 	g.core = NULL;
+	atomic_store(&g.hold, 0);
 	pthread_mutex_unlock(&g.mtx);
+	link_jni_game_unloaded();
 }
 
 static jint after_rom_load(int r)
@@ -302,6 +318,7 @@ J(jint, loadRomBytes)(JNIEnv *env, jclass cls, jbyteArray arr)
 	r = after_rom_load(gbah_load_rom_buffer(g.core, p, (size_t)n));
 	pthread_mutex_unlock(&g.mtx);
 	(*env)->ReleasePrimitiveArrayCritical(env, arr, p, JNI_ABORT);
+	if (r == 0) link_jni_game_loaded();
 	return r;
 }
 
@@ -318,6 +335,7 @@ J(jint, loadRomFd)(JNIEnv *env, jclass cls, jint fd)
 	r = after_rom_load(gbah_load_rom_buffer(g.core, buf, n));
 	pthread_mutex_unlock(&g.mtx);
 	free(buf);
+	if (r == 0) link_jni_game_loaded();
 	return r;
 }
 
@@ -500,6 +518,7 @@ J(jboolean, start)(JNIEnv *env, jclass cls)
 		return JNI_FALSE;
 	}
 	g.thread_on = 1;
+	link_jni_running(1);
 	return JNI_TRUE;
 }
 
@@ -513,4 +532,22 @@ J(jint, frameCounter)(JNIEnv *env, jclass cls)
 {
 	(void)env; (void)cls;
 	return g.core ? (jint)gbah_frame_counter(g.core) : 0;
+}
+
+/* ---- store-backed resume / save (the link engine owns the games directory) ---- */
+
+/* Resume the stored progress of the loaded game: 0 restored, 1 nothing stored, <0 error. */
+J(jint, resumeStored)(JNIEnv *env, jclass cls)
+{
+	phone_link *p = link_jni_engine();
+	(void)env; (void)cls;
+	return p ? phone_resume_stored(p) : -100;
+}
+
+/* Synchronous save (onPause): 0 saved, 1 skipped (nothing new / game is on the PC), <0 error. */
+J(jint, saveNow)(JNIEnv *env, jclass cls)
+{
+	phone_link *p = link_jni_engine();
+	(void)env; (void)cls;
+	return p ? phone_save_now(p) : -100;
 }

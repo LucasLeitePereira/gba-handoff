@@ -66,3 +66,41 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
   add_test(NAME sync_test_san COMMAND ${GBAH_NOASLR} $<TARGET_FILE:sync_test_san>)
   set_tests_properties(sync_test_san PROPERTIES TIMEOUT 120)
 endif()
+
+# ---- phone side (android/app/src/main/cpp): the REAL engine compiled for the host ----
+if(UNIX)
+  set(GBAH_PHONE_DIR ${PROJECT_SOURCE_DIR}/android/app/src/main/cpp)
+  add_library(phone_link STATIC ${GBAH_PHONE_DIR}/phone_link.c ${GBAH_PHONE_DIR}/core_host.c)
+  target_include_directories(phone_link PUBLIC ${GBAH_PHONE_DIR})
+  target_link_libraries(phone_link PUBLIC gbah_core gbah_net gbah_sync Threads::Threads)
+  set_target_properties(phone_link PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
+  target_compile_options(phone_link PRIVATE -Wall -Wextra)
+
+  add_executable(phone_migrate_test phone_migrate_test.c)
+  target_link_libraries(phone_migrate_test PRIVATE phone_link)
+  add_test(NAME phone_migrate_test COMMAND phone_migrate_test)
+
+  if(GBAH_BUILD_DESKTOP)
+    add_executable(phone_link_test phone_link_test.c)
+    target_link_libraries(phone_link_test PRIVATE phone_link)
+    add_dependencies(phone_link_test gbahandoff)
+    add_test(NAME phone_link_test
+             COMMAND phone_link_test $<TARGET_FILE:gbahandoff> ${GBAH_TEST_ROM} ${GBAH_TEST_ROM_SHA1}
+                     ${CMAKE_CURRENT_BINARY_DIR}/fake_adb.sh)
+    set_tests_properties(phone_link_test PROPERTIES TIMEOUT 320)
+    # same scenarios with ASan/UBSan over the engine and the test (threads, buffers, ownership)
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+      add_executable(phone_link_test_san phone_link_test.c ${GBAH_PHONE_DIR}/phone_link.c ${GBAH_PHONE_DIR}/core_host.c)
+      target_include_directories(phone_link_test_san PRIVATE ${GBAH_PHONE_DIR})
+      target_link_libraries(phone_link_test_san PRIVATE gbah_core gbah_net gbah_sync Threads::Threads)
+      set_target_properties(phone_link_test_san PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
+      target_compile_options(phone_link_test_san PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g -O1)
+      target_link_options(phone_link_test_san PRIVATE -fsanitize=address,undefined)
+      add_dependencies(phone_link_test_san gbahandoff)
+      add_test(NAME phone_link_test_san
+               COMMAND ${GBAH_NOASLR} $<TARGET_FILE:phone_link_test_san> $<TARGET_FILE:gbahandoff> ${GBAH_TEST_ROM}
+                       ${GBAH_TEST_ROM_SHA1} ${CMAKE_CURRENT_BINARY_DIR}/fake_adb.sh)
+      set_tests_properties(phone_link_test_san PROPERTIES TIMEOUT 320)
+    endif()
+  endif()
+endif()

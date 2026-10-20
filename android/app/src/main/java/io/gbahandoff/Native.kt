@@ -31,6 +31,13 @@ object Native {
     @JvmStatic external fun restore(state: ByteArray, sav: ByteArray?): Int
     @JvmStatic external fun exportState(): ByteArray?
     @JvmStatic external fun exportSav(): ByteArray?
+    /**
+     * Resume the stored progress of the open game (state + sav, else the cold .sav) through the sync
+     * engine's store. 0 = restored, 1 = nothing stored, <0 = error.
+     */
+    @JvmStatic external fun resumeStored(): Int
+    /** Synchronous save of the open game (onPause): 0 saved, 1 skipped (unchanged / it is on the PC), <0 error. */
+    @JvmStatic external fun saveNow(): Int
     @JvmStatic external fun saveStateFile(path: String): Int
     /** 0 ok, 1 = game has no save data yet (nothing written). */
     @JvmStatic external fun saveSavFile(path: String): Int
