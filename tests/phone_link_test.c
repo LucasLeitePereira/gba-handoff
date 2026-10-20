@@ -14,6 +14,8 @@
  *  E  autosave: periodic, on a .sav change, nothing while idle (negative control); the snapshot is
  *     short (core lock hold time is printed).
  *  F  incompatible core version: the PC refuses, the phone reports REFUSED.
+ *  H  phone as the PC's controller (phase 5): INPUT applied only while the game is on the PC,
+ *     dropped before the handoff, zeroed when the session ends (positive and negative controls).
  * POSIX only. */
 #include "phone_sim.h"
 
@@ -412,7 +414,26 @@ static void scenario_g(void)
 	sim_run(&ph);
 	REQUIRE(pc_start(&pc, g_exe, g_fake_adb, "pc_g", data, port, NULL, "300") == 0);
 	phone_link_start(ph.link);
-	CHECK(notice_wait(&ph, &nt, "nao recebeu a ROM", 20000));
+	{   /* regression: a read that is too small (truncated, or a size query) must NOT consume the notices */
+		size_t base, s1, s2;
+		uint64_t end = mono_ms() + 20000;
+		char small[8], *full;
+		REQUIRE(WAIT(phone_link_status(ph.link) == PL_ST_CONNECTED, 20000));   /* the peer name is in the text from now on */
+		base = s1 = phone_ui_text(ph.link, NULL, 0);
+		while (mono_ms() < end) {
+			s1 = phone_ui_text(ph.link, NULL, 0);
+			if (s1 == base + strlen("N O PC nao recebeu a ROM\n")) break;   /* W line gone, N line there */
+			usleep(30000);
+		}
+		CHECK(s1 > base);                                   /* the notice is pending */
+		(void)phone_ui_text(ph.link, small, sizeof small);  /* truncated read */
+		s2 = phone_ui_text(ph.link, NULL, 0);
+		CHECK(s2 == s1);                                    /* still pending (control: the full read below consumes it) */
+		full = (char *)malloc(s2 + 1);
+		CHECK(phone_ui_text(ph.link, full, s2 + 1) == s2 && strstr(full, "nao recebeu a ROM") != NULL);
+		free(full);
+		CHECK(phone_ui_text(ph.link, NULL, 0) == base);     /* consumed now */
+	}
 	usleep(1500000);
 	CHECK(!on_pc(&ph));
 	a = sim_frame(&ph);
@@ -425,6 +446,83 @@ static void scenario_g(void)
 	sim_destroy(&ph);
 }
 
+/* H: the phone as the PC's controller (phase 5). The test ROM stores the pressed keys in SRAM[1]
+ * every frame, so the .sav that comes back tells which keys the PC really applied.
+ *   mode 0  no INPUT at all (control: SRAM[1] == 0)
+ *   mode 1  INPUT held while the game is on the PC, then RETURN: SRAM[1] == keys
+ *   mode 2  INPUT sent BEFORE the handoff (game still on the phone): the engine drops it, SRAM[1] == 0
+ *   mode 3  INPUT held, the PC is stopped while connected: its own .sav has the keys (control for 4)
+ *   mode 4  INPUT held, then the phone disconnects: the PC zeroes the remote keys, its .sav has 0 */
+#define H_KEYS (GBAH_KEY_A | GBAH_KEY_START)
+static int sav_byte1(const char *games, int *ok)
+{
+	void *st = NULL, *sv = NULL;
+	size_t sn = 0, vn = 0;
+	int v = -1;
+	*ok = gbah_store_read(games, g_sha, &st, &sn, &sv, &vn) == 0 && vn > 1;
+	if (*ok) v = ((uint8_t *)sv)[1];
+	gbah_free(st); gbah_free(sv);
+	return v;
+}
+
+static void scenario_h_mode(int mode)
+{
+	Sim ph;
+	Pc pc;
+	char data[300], name[32], pcn[32], pcgames[340];
+	uint16_t port = free_port();
+	int ok, v;
+
+	snprintf(name, sizeof name, "ph_h%d", mode);
+	snprintf(pcn, sizeof pcn, "pc_h%d", mode);
+	snprintf(data, sizeof data, "%s/%s", g_base, pcn);
+	snprintf(pcgames, sizeof pcgames, "%s/games", data);
+	phone_up(&ph, name, (uint8_t)(0x70 + mode), 600000, 600000, port, NULL);
+	REQUIRE(sim_load_game(&ph, 1) == 1);
+	sim_run(&ph);
+	usleep(400000);
+	CHECK(phone_save_now(ph.link) == 0);
+	REQUIRE(pc_start(&pc, g_exe, g_fake_adb, pcn, data, port, NULL, "300") == 0);
+	if (mode == 2) phone_cmd_input(ph.link, H_KEYS);       /* not on the PC yet */
+	phone_link_start(ph.link);
+	if (!WAIT(on_pc(&ph), 20000)) log_dump(&pc, "H handoff");
+	REQUIRE(on_pc(&ph));
+	if (mode == 1 || mode == 3 || mode == 4) phone_cmd_input(ph.link, H_KEYS);
+	usleep(900000);                                        /* the PC plays frames with the keys */
+	if (mode == 1 || mode == 0 || mode == 2) {
+		phone_cmd_return(ph.link);
+		CHECK(WAIT(!on_pc(&ph), 15000));
+		sim_pause(&ph);
+		v = sav_byte1(ph.games, &ok);
+		CHECK(ok);
+		if (mode == 1) CHECK(v == (int)H_KEYS);
+		else CHECK(v == 0);
+		fprintf(stderr, "H%d: phone .sav[1] after return = 0x%02x\n", mode, v);
+	} else if (mode == 3) {
+		CHECK(pc_stop(&pc) == 0);
+		v = sav_byte1(pcgames, &ok);
+		fprintf(stderr, "H3: PC .sav[1] with the phone connected and holding = 0x%02x\n", v);
+		CHECK(ok && v == (int)H_KEYS);
+	} else {
+		phone_link_stop(ph.link);                         /* session ends: BYE */
+		usleep(900000);                                   /* the PC keeps playing alone */
+		CHECK(pc_stop(&pc) == 0);
+		v = sav_byte1(pcgames, &ok);
+		fprintf(stderr, "H4: PC .sav[1] after the phone left = 0x%02x\n", v);
+		CHECK(ok && v == 0);
+	}
+	phone_link_stop(ph.link);
+	if (mode != 3 && mode != 4) pc_stop(&pc);
+	{ char *l = slurp(pc.log); if (failures) fprintf(stderr, "--- H%d: desktop log ---\n%s", mode, l); free(l); }
+	sim_destroy(&ph);
+}
+
+static void scenario_h(void)
+{
+	int m;
+	for (m = 0; m < 5; m++) { scenario_h_mode(m); kill_all_pcs(); }
+}
+
 int main(int argc, char **argv)
 {
 	if (argc < 5) { fprintf(stderr, "uso: %s <gbahandoff> <rom.gba> <rom-sha1> <fake_adb.sh> [cenarios]\n", argv[0]); return 2; }
@@ -432,13 +530,14 @@ int main(int argc, char **argv)
 	test_init(argv[2], argv[3], "phone");
 	install_cleanup(300);
 	{
-		const char *only = argc > 5 ? argv[5] : "abcdefg";   /* optional: run only some scenarios (debugging) */
+		const char *only = argc > 5 ? argv[5] : "abcdefgh";   /* optional: run only some scenarios (debugging) */
 		if (strchr(only, 'a')) { scenario_a_b(); kill_all_pcs(); }
 		if (strchr(only, 'c')) { scenario_c(); kill_all_pcs(); }
 		if (strchr(only, 'd')) { scenario_d(); kill_all_pcs(); }
 		if (strchr(only, 'e')) scenario_e();
 		if (strchr(only, 'f')) scenario_f();
 		if (strchr(only, 'g')) scenario_g();
+		if (strchr(only, 'h')) { scenario_h(); kill_all_pcs(); }
 	}
 	kill_all_pcs();
 	if (failures) { fprintf(stderr, "phone_link_test: %d falha(s)\n", failures); return 1; }

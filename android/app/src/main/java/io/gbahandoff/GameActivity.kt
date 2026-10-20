@@ -44,7 +44,7 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         surface = SurfaceView(this)
         surface.holder.addCallback(this)
         root.addView(surface, FrameLayout.LayoutParams(GBA_W, GBA_H, Gravity.TOP or Gravity.CENTER_HORIZONTAL))
-        padHost = PadHost(this, { Native.setKeys(it) }) { editing ->   // pad layout editor: pause while editing
+        padHost = PadHost(this, { Native.setKeys(it); LinkClient.sendKeys(it) }) { editing ->   // pad layout editor: pause while editing
             if (editing) Native.stop() else if (sha1 != null) Native.start()
         }
         root.addView(padHost, FrameLayout.LayoutParams(-1, -1))
@@ -52,11 +52,11 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         // link UI above the pad: compact and semi-transparent
         val dp = { v: Float -> LinkUi.dp(this, v) }
         sendBtn = LinkUi.chip(this, "Enviar ao PC") { LinkClient.sendToPc() }.apply { visibility = View.GONE }
-        root.addView(sendBtn, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { topMargin = dp(6f); rightMargin = dp(6f) })
+        root.addView(sendBtn, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START))
         notice = NoticeLine(this)
         root.addView(notice, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(6f) })
         onPcOverlay = OnPcOverlay(this) { LinkClient.doReturn() }
-        root.addView(onPcOverlay, FrameLayout.LayoutParams(GBA_W, GBA_H, Gravity.TOP or Gravity.CENTER_HORIZONTAL))
+        root.addView(onPcOverlay, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START))
         conflictPanel = ConflictPanel(this) { h, keepPhone -> LinkClient.resolve(h, keepPhone) }
         root.addView(conflictPanel, FrameLayout.LayoutParams(-1, -1))
         root.addOnLayoutChangeListener { _, l, t, r, b, _, _, _, _ -> layoutScreen(r - l, b - t) }
@@ -102,6 +102,7 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         val here = h in st.onPc
         if (here) onPcOverlay.show(h in st.waiting) else onPcOverlay.hide()
         sendBtn.visibility = if (st.status == LinkClient.CONNECTED && !here && h !in st.waiting && !conflictPanel.shown) View.VISIBLE else View.GONE
+        placeFloating()
         val c = st.conflicts.firstOrNull()
         if (c != null) conflictPanel.show(c, roms.find(c.sha1)?.title?.ifBlank { null } ?: "jogo ${Fmt.shortSha(c.sha1)}") else conflictPanel.hide()
     }
@@ -123,9 +124,36 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         lp.topMargin = if (w > h) (h - lp.height) / 2 else 0
         surface.layoutParams = lp
         surface.holder.setFixedSize(lp.width, lp.height) // 1 buffer px == 1 screen px: no compositor scaling
-        (onPcOverlay.layoutParams as FrameLayout.LayoutParams).let {
-            it.width = lp.width; it.height = lp.height; it.gravity = lp.gravity; it.topMargin = lp.topMargin
-            onPcOverlay.layoutParams = it
+        placeFloating()
+    }
+
+    /**
+     * The "playing on the PC" pill and the "send to PC" chip are clickable, so they must not sit on a
+     * pad control: put each one in a free corner of the game picture (re-evaluated on every poll, so
+     * moving a control in the editor is picked up).
+     */
+    private fun placeFloating() {
+        val sv = surface.layoutParams as FrameLayout.LayoutParams
+        if (curW == 0 || sv.width == 0) return
+        val left = ((curW - sv.width) / 2).toFloat(); val top = sv.topMargin.toFloat()
+        val area = floatArrayOf(left, top, left + sv.width, top + sv.height)
+        val blocked = ArrayList<FloatArray>()
+        padHost?.occupiedRects(blocked)
+        val m = LinkUi.dp(this, 4f).toFloat()
+        place(onPcOverlay, area, blocked, m, Placement.PREFER_TOP_LEFT)
+        place(sendBtn, area, blocked, m, Placement.PREFER_TOP_RIGHT)
+    }
+
+    private fun place(v: View, area: FloatArray, blocked: List<FloatArray>, margin: Float, order: IntArray) {
+        if (v.visibility != View.VISIBLE) return
+        v.measure(View.MeasureSpec.makeMeasureSpec(curW, View.MeasureSpec.AT_MOST), View.MeasureSpec.makeMeasureSpec(curH, View.MeasureSpec.AT_MOST))
+        val p = Placement.pick(area, v.measuredWidth.toFloat(), v.measuredHeight.toFloat(), margin, blocked, order)
+        val lp = v.layoutParams as FrameLayout.LayoutParams
+        val l = p[0].toInt(); val t = p[1].toInt()
+        if (lp.gravity != (Gravity.TOP or Gravity.START) || lp.leftMargin != l || lp.topMargin != t || lp.rightMargin != 0) {
+            lp.gravity = Gravity.TOP or Gravity.START
+            lp.leftMargin = l; lp.topMargin = t; lp.rightMargin = 0
+            v.layoutParams = lp
         }
     }
 
@@ -162,6 +190,7 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         LinkClient.onBackground()
         Native.stop()
         Native.setKeys(0)
+        LinkClient.sendKeys(0)   // release anything the PC may still hold
         // Through the sync engine: state + .sav, new version, atomic. Skipped (1) when nothing changed or the
         // game is being played on the PC (that copy is not ours to overwrite). Never crash on exit.
         if (sha1 != null) Native.saveNow()

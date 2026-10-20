@@ -49,6 +49,7 @@ static struct {
 	atomic_int run;
 	atomic_uint keys;
 	atomic_int hold;            /* the link engine froze the game (handed to the PC, conflict...) */
+	atomic_int audio_lost;      /* set by the AAudio error callback (any thread); emu thread reopens */
 	AAudioStream *stream;       /* emu thread only while running; opened by start() before the thread */
 	int32_t stream_buf_frames, stream_burst, stream_max_buf;
 	int32_t xruns;
@@ -107,6 +108,14 @@ static void draw(const uint32_t *fb)
 
 /* ---------------------------------------------------------------- audio */
 
+/* AAudio error callback: runs on a system thread, must NOT close/open the stream. Only flag it. */
+static void audio_error_cb(AAudioStream *s, void *user, aaudio_result_t error)
+{
+	(void)s; (void)user;
+	LOGE("AAudio error callback: %d (%s)", error, AAudio_convertResultToText(error));
+	atomic_store(&g.audio_lost, 1);
+}
+
 static void audio_close(void)
 {
 	if (g.stream) {
@@ -129,6 +138,8 @@ static int audio_open(void)
 	AAudioStreamBuilder_setSampleRate(bld, AUDIO_RATE); /* system resamples if the HW differs */
 	if (__builtin_available(android 28, *)) /* minSdk is 26 */
 		AAudioStreamBuilder_setUsage(bld, AAUDIO_USAGE_GAME);
+	AAudioStreamBuilder_setErrorCallback(bld, audio_error_cb, NULL);
+	atomic_store(&g.audio_lost, 0);
 	if (AAudioStreamBuilder_openStream(bld, &g.stream) != AAUDIO_OK) {
 		AAudioStreamBuilder_delete(bld);
 		g.stream = NULL;
@@ -151,21 +162,42 @@ static int audio_open(void)
 	return 0;
 }
 
+/* Close + reopen after a failure. Returns 0 if audio is back, -1 if the caller must pace by timer. */
+static int audio_reopen(const char *why)
+{
+	LOGI("audio closed (%s)", why);
+	audio_close();
+	if (audio_open()) { LOGE("audio reopen FAILED (%s), pacing by timer", why); return -1; }
+	LOGI("audio reopened (%s)", why);
+	return 0;
+}
+
 /* Blocking write; returns 0 if paced by audio, -1 if the caller must pace by timer. */
 static int audio_write(size_t frames)
 {
 	const int16_t *p = g.abuf;
 	int32_t x;
+	aaudio_stream_state_t st;
 	if (!g.stream) return -1;
+	/* A stream that was disconnected/stopped by the system (error callback, idle, routing) never
+	 * recovers by itself: reopen it. Not paced by this call, so the caller falls back to the timer. */
+	st = AAudioStream_getState(g.stream);
+	if (atomic_load(&g.audio_lost) || (st != AAUDIO_STREAM_STATE_STARTED && st != AAUDIO_STREAM_STATE_STARTING)) {
+		char why[64];
+		snprintf(why, sizeof why, atomic_load(&g.audio_lost) ? "error callback" : "state %d", (int)st);
+		return audio_reopen(why);
+	}
 	while (frames) {
 		aaudio_result_t r = AAudioStream_write(g.stream, p, (int32_t)frames, 100 * 1000000LL);
-		if (r < 0) { /* disconnected (headphones...) or other failure: try to reopen once */
-			LOGE("AAudio write error %d, reopening", r);
-			audio_close();
-			if (audio_open()) return -1;
-			return 0;
+		if (r < 0) { /* disconnected (headphones...) or other failure */
+			char why[48];
+			snprintf(why, sizeof why, "write error %d", (int)r);
+			return audio_reopen(why);
 		}
-		if (r == 0) { LOGE("AAudio write timeout"); return 0; }
+		if (r == 0) { /* stalled for 100 ms: the stream is not consuming */
+			LOGE("AAudio write timeout");
+			return audio_reopen("write timeout");
+		}
 		p += (size_t)r * 2;
 		frames -= (size_t)r;
 	}
@@ -191,14 +223,31 @@ static void *emu_main(void *arg)
 {
 	struct timespec next;
 	const long period = (long)(1e9 / GBA_FPS);
+	int was_hold = 0;
+	int retry = 0;   /* frames until the next attempt to get audio back after a failed reopen */
 	(void)arg;
 	clock_gettime(CLOCK_MONOTONIC, &next);
 	while (atomic_load(&g.run)) {
 		size_t n;
+		/* Stream lifecycle outside g.mtx (opening can take tens of ms; hold() takes that lock). */
+		if (!atomic_load_explicit(&g.hold, memory_order_relaxed)) {
+			if (was_hold) {   /* game is back: reopen before the first frame */
+				was_hold = 0;
+				if (audio_open() == 0) LOGI("audio reopened (hold ended)");
+				else { LOGE("audio reopen after hold FAILED, pacing by timer"); retry = 120; }
+			} else if (!g.stream && --retry <= 0) {   /* an earlier reopen failed: retry every ~2 s */
+				retry = 120;
+				if (audio_open() == 0) LOGI("audio reopened (retry)");
+			}
+		}
 		pthread_mutex_lock(&g.mtx);
 		if (atomic_load_explicit(&g.hold, memory_order_relaxed)) {   /* frozen by the link engine: no frame */
 			struct timespec nap = { 0, 8000000L };
 			pthread_mutex_unlock(&g.mtx);
+			if (!was_hold) {   /* game went to the PC: an idle started stream gets killed by the system */
+				was_hold = 1;
+				if (g.stream) { LOGI("audio closed (hold)"); audio_close(); }
+			}
 			nanosleep(&nap, NULL);
 			clock_gettime(CLOCK_MONOTONIC, &next);
 			continue;

@@ -110,7 +110,8 @@ int phone_save_now(phone_link *p);
  *                                      open conflict; dev: 0 this phone, 1 the PC, 2 other
  *   T <sha1> <percent>                 ROM being received
  *   N <text...>                        notice (consumed by this call)
- * Returns the length (>= cap means truncated). */
+ * Returns the length (>= cap means truncated; then the notices are NOT consumed, so a retry with a
+ * bigger buffer loses nothing). */
 size_t phone_ui_text(phone_link *p, char *buf, size_t cap);
 /* Thumbnails of a conflict (XBGR8888, PHONE_THUMB_BYTES). remote=0: this phone. 1 if available. */
 int phone_conflict_thumb(phone_link *p, const uint8_t sha1[20], int remote, uint8_t *out);
@@ -123,6 +124,10 @@ void phone_cmd_return(phone_link *p);                              /* "Voltar pa
 void phone_cmd_handoff(phone_link *p);                             /* "Enviar ao PC": the open game */
 void phone_cmd_resolve(phone_link *p, const uint8_t sha1[20], int keep_phone);
 void phone_cmd_fetch(phone_link *p, const uint8_t sha1[20]);       /* bring the PC's version of a game */
+/* Phone as the PC's controller (GBA KEYINPUT bits, GBAH_KEY_*): the latest keys, sent immediately on a
+ * change (coalesced) and re-sent every ~100 ms while any key is held. Ignored unless the open game is
+ * on the PC. Callable from any thread; only the link thread touches the socket. */
+void phone_cmd_input(phone_link *p, uint16_t keys);
 void phone_ack_open(phone_link *p, const uint8_t sha1[20]);        /* the UI handled an "O" record */
 
 /* ---- migration ------------------------------------------------------------------------

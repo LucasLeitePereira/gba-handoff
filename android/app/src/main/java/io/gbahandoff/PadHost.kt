@@ -35,6 +35,9 @@ class PadHost(
 
     val editing get() = pad.editing
 
+    /** Rects (this view's coordinates) where a touch would hit a control; floating widgets stay out of them. */
+    fun occupiedRects(out: MutableList<FloatArray>) = pad.occupiedRects(out)
+
     init {
         addView(pad, LayoutParams(-1, -1))
         panel.orientation = LinearLayout.VERTICAL

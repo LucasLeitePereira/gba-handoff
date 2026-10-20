@@ -395,6 +395,9 @@ int main(int argc, char **argv)
 
 		uint32_t keys = read_keyboard();
 		for (SDL_Gamepad *g : pads) keys |= read_gamepad(g);
+		// The phone as a second controller: only with a live session and while the game runs here
+		// (this point is reached only when Playing). Dropped sessions zero keys_ in link.cpp.
+		if (link_status.connected()) keys |= server.remote_keys() & GBAH_KEY_MASK;
 		gbah_set_input(core, keys);
 
 		// Pacing: the audio device is the clock. Without audio, fall back to a timer.

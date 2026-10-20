@@ -43,6 +43,7 @@ object LinkClient {
     @JvmStatic private external fun nativeUiText(): String?
     @JvmStatic private external fun nativeConflictThumb(sha: String, remote: Boolean): ByteArray?
     @JvmStatic private external fun nativeReturn()
+    @JvmStatic private external fun nativeSendKeys(keys: Int)
     @JvmStatic private external fun nativeHandoff()
     @JvmStatic private external fun nativeResolve(sha: String, keepPhone: Boolean)
     @JvmStatic private external fun nativeFetch(sha: String)
@@ -136,6 +137,8 @@ object LinkClient {
     /** Parsed engine state; notices in it are consumed, so ONE poller per screen should read it. */
     fun state(): LinkState = LinkState.parse(if (roms != null) nativeUiText() else null)
 
+    /** Phone as the PC's controller: ignored natively unless the open game is being played on the PC. */
+    fun sendKeys(keys: Int) { if (roms != null) nativeSendKeys(keys) }
     fun doReturn() = nativeReturn()
     fun sendToPc() = nativeHandoff()
     fun resolve(sha1: String, keepPhone: Boolean) = nativeResolve(sha1, keepPhone)

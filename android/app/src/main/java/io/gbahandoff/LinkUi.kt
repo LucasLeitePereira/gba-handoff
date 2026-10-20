@@ -30,25 +30,29 @@ object LinkUi {
     }
 }
 
-/** "Jogando no PC": covers the game picture while the PC holds the game. */
+/**
+ * "Jogando no PC": a compact, semi-transparent pill (state + "Voltar") that sits in a free corner of
+ * the game picture. The container is NOT clickable, so touches outside the chip go to the pad under
+ * it; the caller places it away from the pad controls (see [Placement]).
+ */
 class OnPcOverlay(ctx: Context, onReturn: () -> Unit) : LinearLayout(ctx) {
-    private val sub = LinkUi.label(ctx, 11f, 0xCCFFFFFF.toInt())
-    private val btn = LinkUi.chip(ctx, "Voltar para o celular", onReturn)
+    private val sub = LinkUi.label(ctx, 11f, 0xE6FFFFFF.toInt())
+    private val btn = LinkUi.chip(ctx, "Voltar ao celular", onReturn)
 
     init {
-        orientation = VERTICAL
-        gravity = Gravity.CENTER
-        setBackgroundColor(0xE0000000.toInt())
-        isClickable = true          // swallow touches: the pad under it is not in use
-        addView(LinkUi.label(ctx, 15f).apply { text = "Jogando no PC" })
-        addView(sub)
-        addView(btn, LayoutParams(-2, -2).apply { topMargin = LinkUi.dp(ctx, 10f) })
+        orientation = HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        isClickable = false
+        background = GradientDrawable().apply { setColor(0x66000000); cornerRadius = LinkUi.dp(ctx, 12f).toFloat() }
+        setPadding(LinkUi.dp(ctx, 8f), LinkUi.dp(ctx, 2f), LinkUi.dp(ctx, 2f), LinkUi.dp(ctx, 2f))
+        addView(sub, LayoutParams(-2, -2).apply { rightMargin = LinkUi.dp(ctx, 6f) })
+        addView(btn, LayoutParams(-2, -2))
         visibility = GONE
     }
 
     fun show(waitingReturn: Boolean) {
         visibility = VISIBLE
-        sub.text = if (waitingReturn) "Trazendo de volta..." else "O progresso volta para o celular ao retornar"
+        sub.text = if (waitingReturn) "Trazendo de volta..." else "No PC \u2022 controle ativo"
         btn.isEnabled = !waitingReturn
         btn.alpha = if (waitingReturn) 0.5f else 1f
     }

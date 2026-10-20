@@ -114,7 +114,6 @@ J(void, nativeSetRoms)(JNIEnv *env, jclass cls, jobjectArray shas, jlongArray si
 	(void)cls;
 	if (!g_link || !shas || !sizes || !sources) return;
 	n = (*env)->GetArrayLength(env, shas);
-	if (n > 128) n = 128;
 	r = (phone_rom *)calloc((size_t)n + 1, sizeof *r);
 	sz = (*env)->GetLongArrayElements(env, sizes, NULL);
 	if (!r || !sz) { free(r); if (sz) (*env)->ReleaseLongArrayElements(env, sizes, sz, JNI_ABORT); return; }
@@ -138,11 +137,24 @@ J(void, nativeSetRoms)(JNIEnv *env, jclass cls, jobjectArray shas, jlongArray si
 
 J(jstring, nativeUiText)(JNIEnv *env, jclass cls)
 {
-	char buf[6000];
+	char stackbuf[6000], *buf = stackbuf;
+	size_t cap = sizeof stackbuf, need;
+	jstring js;
+	int try_;
 	(void)cls;
 	if (!g_link) return NULL;
-	phone_ui_text(g_link, buf, sizeof buf);
-	return (*env)->NewStringUTF(env, buf);
+	need = phone_ui_text(g_link, buf, cap);
+	for (try_ = 0; need >= cap && try_ < 3; try_++) {   /* truncated (notices not consumed yet): grow and retry */
+		char *big = (char *)malloc(need + 256);
+		if (!big) break;
+		if (buf != stackbuf) free(buf);
+		buf = big; cap = need + 256;
+		need = phone_ui_text(g_link, buf, cap);
+	}
+	if (need >= cap) { buf[cap - 1] = 0; LOGI("ui text truncated (%zu >= %zu)", need, cap); }
+	js = (*env)->NewStringUTF(env, buf);
+	if (buf != stackbuf) free(buf);
+	return js;
 }
 
 /* RGBA bytes (alpha forced to 0xFF), 240x160x4, or null. */
@@ -165,6 +177,7 @@ J(jbyteArray, nativeConflictThumb)(JNIEnv *env, jclass cls, jstring sha, jboolea
 }
 
 J(void, nativeReturn)(JNIEnv *env, jclass cls) { (void)env; (void)cls; if (g_link) phone_cmd_return(g_link); }
+J(void, nativeSendKeys)(JNIEnv *env, jclass cls, jint keys) { (void)env; (void)cls; if (g_link) phone_cmd_input(g_link, (uint16_t)(keys & 0x3FF)); }
 J(void, nativeHandoff)(JNIEnv *env, jclass cls) { (void)env; (void)cls; if (g_link) phone_cmd_handoff(g_link); }
 
 J(void, nativeResolve)(JNIEnv *env, jclass cls, jstring sha, jboolean keepPhone)

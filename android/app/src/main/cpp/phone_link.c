@@ -39,7 +39,9 @@
 #define MAX_ROM_BYTES (33u << 20)
 
 enum { K_SYNC = 0, K_HANDOFF, K_RESOLVED, K_MIRROR };
-enum { CMD_RETURN = 1, CMD_RESOLVE, CMD_FETCH, CMD_HANDOFF };
+enum { CMD_RETURN = 1, CMD_RESOLVE, CMD_FETCH, CMD_HANDOFF, CMD_INPUT };
+#define INPUT_RESEND_MS 100   /* re-send period while a key is held (recovers loss across a reconnect) */
+#define FAST_POLL_MS 8        /* link thread poll while the game is on the PC (input latency) */
 
 uint64_t phone_hash(const void *d, size_t n)
 {
@@ -369,7 +371,10 @@ static int open_rom_fd(phone_link *p, const uint8_t sha[20])
 void phone_set_roms(phone_link *p, const phone_rom *roms, int n)
 {
 	pthread_mutex_lock(&p->mtx);
-	if (n > MAX_GAMES) n = MAX_GAMES;
+	if (n > MAX_GAMES) {
+		LOGI("phone_set_roms: %d ROMs, only the first %d are used", n, MAX_GAMES);
+		n = MAX_GAMES;
+	}
 	if (n < 0) n = 0;
 	if (n) memcpy(p->roms, roms, sizeof *roms * (size_t)n);
 	p->nroms = n;
@@ -432,6 +437,7 @@ typedef struct {
 	uint8_t asked[MAX_HELD * 2][20]; int nasked;
 	uint8_t rx_sha[20]; uint64_t rx_total; uint8_t *rx_buf; size_t rx_len; int rx_on;
 	struct { uint8_t sha[20]; uint8_t *th; } tcache[4]; int tnext;
+	uint32_t in_seq; uint16_t in_keys; uint64_t in_sent_ms;   /* last INPUT sent (link thread only) */
 } sess_t;
 
 static int send_frame(sess_t *s, const void *buf, size_t n)
@@ -1102,6 +1108,35 @@ static void handle_thumb(sess_t *s, const gbahp_thumb *t)
 	}
 }
 
+/* The game is on the PC (handed over and not given back)? */
+static int game_on_pc(phone_link *p)
+{
+	int has;
+	pthread_mutex_lock(&p->mtx);
+	has = p->on_pc_has;
+	pthread_mutex_unlock(&p->mtx);
+	return has;
+}
+
+/* Phone as a controller (phase 5). Only while the game is on the PC; `force` = a change (send now),
+ * otherwise only the periodic re-send of held keys. Link thread only: it owns the socket. */
+static void send_input(sess_t *s, uint16_t keys, int force)
+{
+	gbahp_input in;
+	uint8_t out[64];
+	uint64_t t = mono_ms();
+	if (!game_on_pc(s->p)) {   /* game left the PC: release whatever the PC still holds, once */
+		if (s->in_keys) { in.seq = ++s->in_seq; in.keys = 0; s->in_keys = 0; send_frame(s, out, gbahp_encode_input(&in, out, sizeof out)); }
+		return;
+	}
+	if (!force && (s->in_keys == 0 || t - s->in_sent_ms < INPUT_RESEND_MS)) return;
+	in.seq = ++s->in_seq;
+	in.keys = keys;
+	s->in_keys = keys;
+	s->in_sent_ms = t;
+	send_frame(s, out, gbahp_encode_input(&in, out, sizeof out));
+}
+
 static void handle_cmd(sess_t *s, const cmd_t *c)
 {
 	phone_link *p = s->p;
@@ -1118,6 +1153,9 @@ static void handle_cmd(sess_t *s, const cmd_t *c)
 	}
 	case CMD_FETCH:
 		send_control(s, GBAHP_CTL_FETCH, c->sha1, 0);
+		break;
+	case CMD_INPUT:
+		send_input(s, (uint16_t)c->arg, 1);
 		break;
 	case CMD_HANDOFF: {   /* "send to the PC" for the game open on the phone */
 		uint8_t cur[20];
@@ -1228,7 +1266,7 @@ static int session(phone_link *p, gbahp_sock sock)
 		uint64_t t;
 		cmd_t cmd;
 		int have_cmd;
-		r = gbahp_conn_recv(&s->c, &f, 100);
+		r = gbahp_conn_recv(&s->c, &f, game_on_pc(p) ? FAST_POLL_MS : 100);
 		t = mono_ms();
 		if (r < 0) break;
 		if (r == 1) {
@@ -1304,6 +1342,7 @@ static int session(phone_link *p, gbahp_sock sock)
 			if (!have_cmd) break;
 			handle_cmd(s, &cmd);
 		}
+		if (s->in_keys) send_input(s, s->in_keys, 0);   /* held keys: periodic re-send */
 		if (atomic_exchange(&p->mirror_req, 0) && s->lib_done && !mirror_inflight(s)) {
 			uint8_t cur[20];
 			int skip;
@@ -1509,6 +1548,10 @@ int phone_resume_stored(phone_link *p)
 static void enqueue(phone_link *p, int type, const uint8_t *sha, int arg)
 {
 	pthread_mutex_lock(&p->mtx);
+	if (type == CMD_INPUT) {   /* only the latest keys matter: replace a pending INPUT, never flood the queue */
+		int i;
+		for (i = 0; i < p->ncmd; i++) if (p->cmds[i].type == CMD_INPUT) { p->cmds[i].arg = arg; pthread_mutex_unlock(&p->mtx); return; }
+	}
 	if (p->ncmd < MAX_CMDS) {
 		cmd_t *c = &p->cmds[p->ncmd++];
 		c->type = type; c->arg = arg;
@@ -1521,6 +1564,16 @@ void phone_cmd_return(phone_link *p) { enqueue(p, CMD_RETURN, NULL, 0); }
 void phone_cmd_handoff(phone_link *p) { enqueue(p, CMD_HANDOFF, NULL, 0); }
 void phone_cmd_resolve(phone_link *p, const uint8_t sha1[20], int keep_phone) { enqueue(p, CMD_RESOLVE, sha1, keep_phone); }
 void phone_cmd_fetch(phone_link *p, const uint8_t sha1[20]) { enqueue(p, CMD_FETCH, sha1, 0); }
+
+void phone_cmd_input(phone_link *p, uint16_t keys)
+{
+	int on_pc;
+	pthread_mutex_lock(&p->mtx);
+	on_pc = p->on_pc_has;
+	pthread_mutex_unlock(&p->mtx);
+	/* Nothing to tell the PC unless it is playing our game (the link thread re-checks). */
+	if (on_pc) enqueue(p, CMD_INPUT, NULL, keys);
+}
 
 void phone_ack_open(phone_link *p, const uint8_t sha1[20])
 {
@@ -1558,7 +1611,7 @@ size_t phone_ui_text(phone_link *p, char *buf, size_t cap)
 		     c->rthumb ? 1 : 0, c->waiting_pc, c->have_remote);
 	}
 	for (i = 0; i < p->nnotice; i++) EMIT("N %s\n", p->notices[i]);
-	p->nnotice = 0;
+	if (len < cap) p->nnotice = 0;   /* notices are consumed only if the whole text fit (a truncated read can be retried) */
 	pthread_mutex_unlock(&p->mtx);
 #undef EMIT
 	if (buf && cap) buf[len < cap ? len : cap - 1] = 0;

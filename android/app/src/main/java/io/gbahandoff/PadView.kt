@@ -121,6 +121,14 @@ class PadView(
         return x >= gear.left - s && x <= gear.right + s && y >= gear.top - s && y <= gear.bottom + s
     }
 
+    /** Adds the screen areas that touches may land on (controls and the gear, with the hit slop) to [out]. */
+    fun occupiedRects(out: MutableList<FloatArray>) {
+        val s = 8 * density
+        for (i in 0 until n) { val r = rects[i]; out.add(floatArrayOf(r.left - s, r.top - s, r.right + s, r.bottom + s)) }
+        val g = 6 * density
+        out.add(floatArrayOf(gear.left - g, gear.top - g, gear.right + g, gear.bottom + g))
+    }
+
     private fun cancelGear() { gearDown = false; removeCallbacks(gearRun) }
 
     override fun onTouchEvent(e: MotionEvent): Boolean =
