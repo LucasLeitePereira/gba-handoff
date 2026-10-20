@@ -43,6 +43,9 @@ typedef struct {
 void gbahp_conn_init(gbahp_conn *c, gbahp_sock s);
 void gbahp_conn_close(gbahp_conn *c);                       /* closes the socket, frees the parser */
 int gbahp_conn_send(gbahp_conn *c, const void *data, size_t n);   /* 0 ok, -1 error */
+/* Same on a bare socket: lets a writer thread send while another thread owns the gbahp_conn
+ * (one writer at a time; reading and writing one socket from two threads is fine). */
+int gbahp_net_send(gbahp_sock s, const void *data, size_t n);
 /* 1 = frame ready (valid until the next recv), 0 = timeout, -1 = closed/socket
  * error, -2 = protocol error (c->proto_error; drop the connection). */
 int gbahp_conn_recv(gbahp_conn *c, gbahp_frame *f, int timeout_ms);

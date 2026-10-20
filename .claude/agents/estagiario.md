@@ -21,3 +21,4 @@ Você é o **estagiário** do projeto GBA Handoff. Faz tarefas simples e bem esp
 ## Lições aprendidas
 _(atualizado pelo sênior após cada tarefa)_
 - [Fase 0/apt] Bom: comandos exatos + timeout longo + relatório comando→resultado funcionou bem. Continue nesse formato.
+- [Fase 4/reinstalar toolchain] Bom: seguiu os passos em ordem, -j2 respeitado, relatório fiel. Ao resumir ctest, mostre a lista completa de testes (o tail cortou o teste 1).

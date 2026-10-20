@@ -133,6 +133,9 @@ int gbah_handoff_restore(gbah_core *c, const void *state, size_t state_size,
  * identical values: the network handshake compares it (HELLO.core_version). */
 const char *gbah_core_version(void);
 
+/* SHA-1 of an arbitrary buffer (same algorithm as gbah_rom_sha1). */
+void gbah_sha1(const void *data, size_t size, uint8_t out[20]);
+
 void gbah_free(void *p);
 
 /* Convenience: whole-file helpers (malloc'ed result). */

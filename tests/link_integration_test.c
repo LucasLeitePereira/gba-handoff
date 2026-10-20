@@ -11,7 +11,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
-#include <spawn.h>
+#include <sys/prctl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,7 +19,6 @@
 #include <time.h>
 #include <unistd.h>
 
-extern char **environ;
 
 static int failures;
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #c); failures++; } } while (0)
@@ -78,7 +77,6 @@ int main(int argc, char **argv)
 	gbahp_sock probe;
 	pid_t pid;
 	int i, status = 0;
-	posix_spawn_file_actions_t fa;
 
 	if (argc < 5) { fprintf(stderr, "usage: %s gbahandoff rom sha1hex fake_adb\n", argv[0]); return 2; }
 	exe = argv[1]; rom = argv[2]; sha_hex = argv[3]; fake_adb = argv[4];
@@ -100,13 +98,20 @@ int main(int argc, char **argv)
 	setenv("SDL_VIDEO_DRIVER", "dummy", 1);   /* no display in CI / WSL */
 	setenv("SDL_AUDIO_DRIVER", "dummy", 1);
 	setenv("XDG_DATA_HOME", xdg, 1);   /* device_id file goes to the temp dir, not to $HOME */
-	posix_spawn_file_actions_init(&fa);
-	posix_spawn_file_actions_addopen(&fa, 1, logp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-	posix_spawn_file_actions_adddup2(&fa, 1, 2);
 	{
 		char *args[] = { (char *)exe, "--exit-after-sessions", "2", "--port", portarg, "--adb", (char *)fake_adb,
 		                 "--software", (char *)rom, NULL };
-		if (posix_spawn(&pid, exe, &fa, NULL, args, environ) != 0) { perror("spawn"); return 2; }
+		pid_t parent = getpid();
+		pid = fork();
+		if (pid < 0) { perror("fork"); return 2; }
+		if (pid == 0) {   /* dies with this test (ctest timeout) instead of becoming an orphan */
+			int fd = open(logp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+			if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); }
+			prctl(PR_SET_PDEATHSIG, SIGKILL);
+			if (getppid() != parent) _exit(99);
+			execv(exe, args);
+			_exit(127);
+		}
 	}
 
 	/* session 1: wrong mGBA version */
@@ -154,7 +159,11 @@ int main(int argc, char **argv)
 				CHECK(gbahp_conn_send(&c, out, gbahp_encode_library(&none, 0, out, sizeof out)) == 0);
 				CHECK(gbahp_conn_send(&c, out, gbahp_encode_input(&in, out, sizeof out)) == 0);
 				CHECK(gbahp_conn_send(&c, out, gbahp_encode_ping(&p, out, sizeof out)) == 0);
-				CHECK(gbahp_conn_recv(&c, &f, 5000) == 1 && f.type == GBAHP_MSG_PONG);
+				{   /* the PC also sends CONTROL(PC_STATUS) etc.: skip until the PONG */
+					int r, k = 0;
+					do { r = gbahp_conn_recv(&c, &f, 5000); } while (r == 1 && f.type != GBAHP_MSG_PONG && ++k < 20);
+					CHECK(r == 1 && f.type == GBAHP_MSG_PONG);
+				}
 				CHECK(gbahp_decode_ping(f.payload, f.len, &q) == 0 && q.token == 777);
 			}
 			{ gbahp_bye b = { 0 }; CHECK(gbahp_conn_send(&c, out, gbahp_encode_bye(&b, out, sizeof out)) == 0); }

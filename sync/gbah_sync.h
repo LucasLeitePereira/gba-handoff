@@ -66,6 +66,9 @@ int gbah_meta_decode(const uint8_t *buf, size_t n, gbah_meta *m, uint32_t *thumb
 int gbah_fs_mkdirs(const char *dir);                                    /* 0 ok */
 int gbah_fs_read_all(const char *path, void **out, size_t *n);           /* malloc'ed; 0 ok, -1 missing/error */
 int gbah_fs_write_atomic(const char *path, const void *data, size_t n);  /* tmp + rename; 0 ok */
+int gbah_fs_read_prefix(const char *path, void *buf, size_t n, size_t *got);  /* first n bytes (e.g. ROM header); 0 ok */
+/* Calls cb for every entry name in dir (no "." / ".."). A missing dir is not an error. 0 ok. */
+int gbah_fs_list(const char *dir, void (*cb)(const char *name, void *u), void *u);
 int gbah_fs_remove(const char *path);                                    /* 0 ok or already missing */
 int gbah_fs_exists(const char *path);
 int gbah_fs_size(const char *path, uint64_t *size);                      /* 0 ok */

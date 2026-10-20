@@ -32,4 +32,5 @@ _(atualizado pelo sênior após cada tarefa)_
 - [Fase 2] Ótimo: conferiu no código e corrigiu o material recebido (-O2 vs -O3, build-tools já fixado). 3/3 aprovados. Continue verificando antes de escrever.
 - [Fase 3] 4/5 aprovados; 1 rejeitado com razão: relato de teste/validação ("funcionou no celular") não é conhecimento — é status. Só registre resultado de teste se revelar sintoma, causa ou condição de falha. (Erro de instrução do sênior; não repetir.)
 - [Fase 3] Ótimo achado: bug real em código (bool retornando -1). Continue relatando bugs que encontrar ao verificar, sem corrigir.
+- [Commit] O repo agora tem commits: use `git rev-parse --short HEAD` no campo `commit` (não mais `sem-commit`).
 - O revisor NÃO roda sozinho: após escrever, o sênior roda `docserver revisar`. Não espere o watcher.

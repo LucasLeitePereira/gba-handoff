@@ -254,6 +254,31 @@ static void test_store(const char *root)
 	CHECK(gbah_store_list(dir, count_cb, NULL) == 0 && count_cb_n == 1);
 }
 
+static int list_n; static char list_names[8][64];
+static void list_cb(const char *name, void *u) { (void)u; if (list_n < 8) snprintf(list_names[list_n], 64, "%s", name); list_n++; }
+
+static void test_fs_helpers(const char *root)
+{
+	char dir[300], p[340], buf[16];
+	size_t got = 99;
+	snprintf(dir, sizeof dir, "%s/fs", root);
+	CHECK(gbah_fs_mkdirs(dir) == 0);
+	list_n = 0;
+	CHECK(gbah_fs_list(dir, list_cb, NULL) == 0 && list_n == 0);
+	CHECK(gbah_fs_list("/tmp/gbah_no_such_dir_xyz", list_cb, NULL) == 0 && list_n == 0);   /* missing dir is not an error */
+	snprintf(p, sizeof p, "%s/a.bin", dir);
+	CHECK(gbah_fs_write_atomic(p, "0123456789", 10) == 0);
+	snprintf(p, sizeof p, "%s/b.bin", dir);
+	CHECK(gbah_fs_write_atomic(p, "xy", 2) == 0);
+	CHECK(gbah_fs_list(dir, list_cb, NULL) == 0 && list_n == 2);   /* no "." / "..", no leftover tmp files */
+	/* read_prefix: shorter than the file, equal, longer, missing */
+	snprintf(p, sizeof p, "%s/a.bin", dir);
+	CHECK(gbah_fs_read_prefix(p, buf, 4, &got) == 0 && got == 4 && !memcmp(buf, "0123", 4));
+	CHECK(gbah_fs_read_prefix(p, buf, 16, &got) == 0 && got == 10 && !memcmp(buf, "0123456789", 10));
+	snprintf(p, sizeof p, "%s/none.bin", dir);
+	CHECK(gbah_fs_read_prefix(p, buf, 4, &got) != 0);
+}
+
 int main(void)
 {
 	char root[] = "/tmp/gbah_sync_XXXXXX", cmd[300];
@@ -265,6 +290,7 @@ int main(void)
 	test_meta_codec();
 	if (!mkdtemp(root)) { perror("mkdtemp"); return 2; }
 	test_store(root);
+	test_fs_helpers(root);
 	snprintf(cmd, sizeof cmd, "rm -rf %s", root);
 	if (system(cmd) != 0) { /* best effort */ }
 	if (failures) { fprintf(stderr, "%d check(s) failed\n", failures); return 1; }

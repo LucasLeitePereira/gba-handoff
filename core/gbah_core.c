@@ -78,6 +78,14 @@ static void sha1_final(sha1_ctx *c, uint8_t out[20])
 	for (i = 0; i < 20; i++) out[i] = (uint8_t)(c->h[i / 4] >> (24 - 8 * (i % 4)));
 }
 
+void gbah_sha1(const void *data, size_t size, uint8_t out[20])
+{
+	sha1_ctx s;
+	sha1_init(&s);
+	sha1_update(&s, (const uint8_t *)data, size);
+	sha1_final(&s, out);
+}
+
 /* ----------------------------------------------------------------- core */
 
 struct gbah_core {

@@ -187,11 +187,13 @@ void gbahp_conn_close(gbahp_conn *c)
 	gbahp_parser_free(&c->parser);
 }
 
-int gbahp_conn_send(gbahp_conn *c, const void *data, size_t n)
+int gbahp_conn_send(gbahp_conn *c, const void *data, size_t n) { return gbahp_net_send(c->s, data, n); }
+
+int gbahp_net_send(gbahp_sock s, const void *data, size_t n)
 {
 	const char *p = (const char *)data;
 	while (n) {
-		int r = (int)send(S(c->s), p, n > 65536 ? 65536 : (int)n, SEND_FLAGS);
+		int r = (int)send(S(s), p, n > 65536 ? 65536 : (int)n, SEND_FLAGS);
 		if (r <= 0) {
 #ifndef _WIN32
 			if (r < 0 && errno == EINTR) continue;

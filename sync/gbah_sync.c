@@ -203,6 +203,18 @@ int gbah_fs_read_all(const char *path, void **out, size_t *n)
 	return 0;
 }
 
+int gbah_fs_read_prefix(const char *path, void *buf, size_t n, size_t *got)
+{
+	FILE *f = fopen_u(path, "rb");
+	size_t r;
+	if (got) *got = 0;
+	if (!f) return -1;
+	r = fread(buf, 1, n, f);
+	fclose(f);
+	if (got) *got = r;
+	return 0;
+}
+
 int gbah_fs_write_atomic(const char *path, const void *data, size_t n)
 {
 	size_t pl = strlen(path);
@@ -277,8 +289,7 @@ uint64_t gbah_now_ms(void)
 #endif
 }
 
-/* Calls cb for every entry name in dir (no "." / ".."). */
-static int fs_list(const char *dir, void (*cb)(const char *name, void *u), void *u)
+int gbah_fs_list(const char *dir, void (*cb)(const char *name, void *u), void *u)
 {
 #ifdef _WIN32
 	size_t n = strlen(dir);
@@ -473,7 +484,7 @@ static int bk_collect(const char *dir, const uint8_t sha1[20], bk_list *l)
 	gbah_sha1_hex(sha1, hex);
 	snprintf(l->prefix, sizeof l->prefix, "%s.backup-", hex);
 	l->count = 0;
-	if (fs_list(dir, bk_cb, l) != 0) return -1;
+	if (gbah_fs_list(dir, bk_cb, l) != 0) return -1;
 	for (i = 0; i < l->count; i++)            /* newest first */
 		for (j = i + 1; j < l->count; j++)
 			if (l->ts[j] > l->ts[i]) { uint64_t t = l->ts[i]; l->ts[i] = l->ts[j]; l->ts[j] = t; }
@@ -540,7 +551,7 @@ int gbah_store_list(const char *dir, void (*cb)(const uint8_t sha1[20], void *us
 	int rc;
 	if (!l) return -1;
 	l->cb = cb; l->user = user;
-	rc = fs_list(dir, list_cb, l);
+	rc = gbah_fs_list(dir, list_cb, l);
 	free(l);
 	return rc;
 }

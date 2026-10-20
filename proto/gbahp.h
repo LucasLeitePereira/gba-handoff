@@ -208,7 +208,7 @@ enum {
 	GBAHP_CTL_RETURN          = 1,  /* phone -> PC: stop playing and HANDOFF-push the game back to me */
 	GBAHP_CTL_FETCH           = 2,  /* phone -> PC: push your version of the game (RESOLVED); you keep playing */
 	GBAHP_CTL_PC_STATUS       = 3,  /* PC -> phone: arg 1 = playing sha1, 0 = idle (sha1 ignored) */
-	GBAHP_CTL_ROM_UNAVAILABLE = 4   /* phone -> PC: cannot provide the ROM asked for */
+	GBAHP_CTL_ROM_UNAVAILABLE = 4   /* either way: cannot provide the ROM that was asked for (answers ROM_REQUEST) */
 };
 typedef struct { uint8_t cmd; uint8_t sha1[20]; uint32_t arg; } gbahp_control;
 

@@ -5,12 +5,15 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
 extern "C" {
+#include "gbah_sync.h"
 #include "gbahp.h"
 }
 
@@ -21,6 +24,10 @@ class Status {
 public:
 	void set_connected(const std::string &device_name); // empty name = disconnected
 	void set_adb_note(const std::string &note);
+	void set_port_busy(uint16_t port);                   // another instance owns the port
+	bool port_busy() const { return port_busy_.load(); }
+	std::string device() const;                          // connected phone name, "" = none
+	std::string note() const;                            // adb note
 	bool connected() const { return connected_.load(); }
 	unsigned generation() const { return gen_.load(); }
 	std::string title() const;
@@ -29,6 +36,7 @@ private:
 	mutable std::mutex m_;
 	std::string device_, note_;
 	std::atomic<bool> connected_{false};
+	std::atomic<bool> port_busy_{false};
 	std::atomic<unsigned> gen_{1};
 };
 
@@ -37,8 +45,42 @@ struct ServerOptions {
 	uint8_t device_id[16] = {};
 	std::string device_name;
 	std::string core_version;
-	std::vector<gbahp_lib_entry> library; // ROMs this PC has
+	std::string roms_dir;                 // received ROMs are written here as <sha1>.gba
 };
+
+// A STATE_PUSH, owned (the wire views die with the next recv).
+struct PushData {
+	uint8_t sha1[20] = {};
+	gbah_ver version{}, base{};
+	uint8_t flags = 0;
+	uint64_t timestamp_ms = 0;
+	uint32_t frame = 0;
+	std::vector<uint8_t> state, sav, thumb;
+};
+
+// What the link thread tells the main thread. ALL protocol decisions are made on the main
+// thread (it owns the core and the library); the link thread is transport + ROM reception.
+struct Event {
+	enum Type { Connected, Disconnected, PhoneLibrary, Push, Ack, Control, RomRequest, RomReceived, RomRejected } type;
+	std::string name;                     // Connected
+	std::vector<gbahp_lib_entry> lib;     // PhoneLibrary
+	std::shared_ptr<PushData> push;       // Push
+	gbahp_state_ack ack{};                // Ack
+	gbahp_control ctl{};                  // Control
+	uint8_t sha1[20] = {};                // RomRequest / RomReceived / RomRejected
+};
+
+// Frame builders (main thread). Each returns one complete frame, empty on error.
+namespace wire {
+std::vector<uint8_t> library(const std::vector<gbahp_lib_entry> &e);
+std::vector<uint8_t> state_push(const gbahp_state_push &p);
+std::vector<uint8_t> state_ack(const uint8_t sha1[20], const gbah_ver &v, uint8_t status);
+std::vector<uint8_t> control(uint8_t cmd, const uint8_t sha1[20], uint32_t arg);
+std::vector<uint8_t> thumb(const uint8_t sha1[20], const void *data, uint32_t len);
+std::vector<uint8_t> rom_request(const uint8_t sha1[20]);
+} // namespace wire
+
+struct Outbox;
 
 class Server {
 public:
@@ -47,11 +89,23 @@ public:
 	bool start(const ServerOptions &opt); // false if the port cannot be bound
 	void stop();
 	unsigned sessions_ended() const { return ended_.load(); }
-	uint32_t remote_keys() const { return keys_.load(); } // latest INPUT from the phone
+	uint32_t remote_keys() const { return keys_.load(); } // latest INPUT from the phone (phase 5: control mode)
+
+	bool poll(Event &e);                  // main thread: next event, false if none
+	// Queues one frame for the phone (never blocks). droppable frames are discarded when more
+	// than 8 MiB are already waiting (a stalled link must not eat the PC's memory). false = not
+	// connected / dropped.
+	bool send(std::vector<uint8_t> &&frame, bool droppable = false);
+	// Streams roms/<sha1>.gba as ROM_PUSH chunks, interleaved with (and below) normal messages.
+	bool send_rom(const uint8_t sha1[20], const std::string &path);
+	// Waits (bounded) until the queued messages have been written to the socket.
+	void flush(int timeout_ms);
 
 private:
 	void thread_main();
 	intptr_t session(intptr_t sock);
+	void post(Event &&e);
+	void handle_rom_chunk(const gbahp_rom_push &r);
 
 	Status &st_;
 	ServerOptions opt_;
@@ -60,6 +114,13 @@ private:
 	std::atomic<bool> stop_{false};
 	std::atomic<unsigned> ended_{0};
 	std::atomic<uint32_t> keys_{0};
+
+	std::mutex ev_m_;
+	std::deque<Event> ev_;
+	std::mutex out_m_;
+	std::shared_ptr<Outbox> out_;         // current session's writer (null = not connected)
+
+	struct RomRx { uint8_t sha1[20] = {}; uint64_t total = 0; std::vector<uint8_t> buf; bool active = false; } rx_;
 };
 
 // Polls `adb devices` (only while no phone is connected) and runs
