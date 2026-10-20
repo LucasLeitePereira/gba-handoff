@@ -37,4 +37,5 @@ _(atualizado pelo sênior após cada tarefa)_
 - [Fase 4b] 7/7 aprovados (4 sem ajuste). Ótimo: achou 3 docs obsoletos sozinho, recusou números não verificados (<1 ms) e corrigiu a cadência do autosave. Padrão a manter.
 - [Dono único] 9/9 aprovados. Ótimo: recusou afirmação do dev que não estava no código ("RETURN espúrio") e delimitou o fallback de 5 s. Continue assim.
 - [PC layout/instalação] 4/4 aprovados (3 com ajuste). O revisor pegou generalização ("toda mensagem de falha diz X") que só valia para parte dos casos: confira cada ramo antes de escrever "toda/sempre". Não repita o que outro doc aprovado já cobre; faça remissão.
+- [Celular entra no jogo do PC] 3/3 aprovados (1 com ajuste). Ótimo: corrigiu o material do dev (NOTHING além de RECEIVE), recusou documentar falha esporádica não verificada e não criou doc trivial de release.
 - O revisor NÃO roda sozinho: após escrever, o sênior roda `docserver revisar`. Não espere o watcher.
