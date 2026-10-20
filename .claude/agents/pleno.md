@@ -52,4 +52,5 @@ _(atualizado pelo sênior após cada tarefa)_
 - [Fase 4b] Excelente: motor C sem JNI testado no host contra o desktop real, achou bug com o teste, migração com backup permanente. Desvios do pedido (snapshot em outra thread) foram declarados — continue declarando.
 - [Fase 4b] Dados do usuário: qualquer mudança de formato em disco exige migração idempotente + cópia legada intocada + teste. Nunca recomende desinstalar o app (perde o save).
 - [Fase 5/bugs do aparelho] Ótimo: controle negativo comentando a linha do PC, regressão de avisos testada, desvio (z-order) declarado. Código que só o aparelho valida (áudio): logs com motivo em cada transição para diagnosticar por logcat.
+- [Dono único/config] Bom: controles negativos por invariante, desvio declarado, achou que tests/roms estava no .gitignore. Quando notar um problema de repositório (arquivo necessário não versionado), relate como PRIORIDADE — teste que só passa nesta máquina é teste quebrado.
 - [Fase 0] A máquina tem só 3 GB de RAM e 8 núcleos: limite paralelismo (`-j4`) e Gradle (`org.gradle.jvmargs=-Xmx1g`, sem daemon).

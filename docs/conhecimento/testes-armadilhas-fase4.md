@@ -1,12 +1,12 @@
 ---
-titulo: Armadilhas dos testes do handoff (órfãos, ASan no WSL2, mensagens fora de ordem)
+titulo: Armadilhas dos testes do handoff (órfãos, ASan no WSL2, mensagens fora de ordem, teclas remotas)
 tipo: armadilha
 gerado_por: claude-sonnet-5-5
-commit: f84dedf
+commit: 74f70ce
 arquivos: tests/handoff_e2e_test.c, tests/run_san.sh, tests/CMakeLists.txt, desktop/handoff.cpp
 revisado_por: claude-opus-5-5
-revisado_em: 2026-10-20T12:39:52Z
-parecer: Conferi no código e quase tudo bate. Em tests/handoff_e2e_test.c: PR_SET_PDEATHSIG(SIGKILL) com a checagem getppid na linha 133-134, kill_all_pcs depois de cada cenário (940-950), atexit e handlers de SIGTERM/SIGINT/SIGALRM (929-930) e alarm(170) abaixo do TIMEOUT 180 do ctest (CMakeLists:54). Em tests/run_san.sh, a regra de repetir só quando há DEADLYSIGNAL sem 'ERROR: AddressSanitizer'/'runtime error' está certa. Os testes *_san têm TIMEOUT 120 e o CMakeLists registra que setarch -R não é permitido. Em desktop/handoff.cpp, send_pc_status é chamado em 7 lugares sem pedido do celular, e wait_type descarta o que não é o tipo esperado.; Correção: 'repete até 6x' engana. Cada tentativa roda com `timeout 90` e o glitch é um loop sem fim, então uma tentativa travada gasta os 90 s inteiros. Com o TIMEOUT 120 do ctest só cabe uma repetição depois de um travamento, e um segundo glitch seguido faz o ctest matar o teste por timeout. Acrescentei isso porque é o sintoma que a pessoa vai ver.; Tirei 'cerca de 1 em 6 execuções': nada no código ou nos comentários confirma essa frequência.; Não repete os documentos aprovados: ambiente-build-teste e link-armadilhas não falam de órfãos do e2e, ASan no WSL2 nem PC_STATUS fora de ordem. protocolo-decisoes só define o PC_STATUS. O texto explica sintoma e causa, é curto e não tem segredos nem dados pessoais.
+revisado_em: 2026-10-20T17:56:34Z
+parecer: Os três primeiros itens são iguais aos da versão aprovada (f84dedf), já conferida. O código não mudou nesses pontos.; O quarto item é novo e confere com o código. desktop/handoff.cpp:97 zera as teclas em set_mode ao sair de Playing, e handoff.cpp:286 zera de novo em enter_playing. O PLACE_PC passa por place_pc -> open_game -> enter_playing. O cenário G (tests/handoff_e2e_test.c:962-1001) manda 0x301, força o conflito, manda PLACE_PC, espera 0/0 e depois manda 0x201 para mostrar que a medição funciona. Nesse fluxo qualquer um dos dois zeramentos basta para o teste passar, então a armadilha é real.; Ajuste: o texto chamava os dois zeramentos de 'dupla proteção deliberada', mas eles cobrem casos diferentes. Em link.cpp:526, o INPUT é aceito em qualquer modo. Por isso o zeramento em enter_playing apaga um INPUT atrasado que chegou durante a pausa, depois que set_mode já tinha zerado. O zeramento em set_mode solta o que estava preso ao sair de Playing. Escrevi o porquê de cada um e tirei a redação longa do negrito.; Ajuste: título atualizado para incluir o novo assunto.; Não repete outros documentos: testes-phone-link-armadilhas fala do byte SRAM[1] no cenário H, não do zeramento de teclas. Não tem segredos nem dados pessoais.
 ---
 
 # Armadilhas dos testes do handoff
@@ -30,3 +30,11 @@ parecer: Conferi no código e quase tudo bate. Em tests/handoff_e2e_test.c: PR_S
   ele pode chegar antes do PONG ou de qualquer resposta esperada. Clientes de teste devem ler em
   laço e pular mensagens até chegar a esperada (ver `wait_type` no e2e). Um teste que assume "a
   próxima mensagem é o PONG" falha de forma intermitente.
+- **O cenário G não prova cada zeramento de teclas remotas isoladamente.** As teclas do celular
+  são zeradas em dois pontos de `desktop/handoff.cpp`, com papéis diferentes. `set_mode`, ao sair
+  de Playing, solta o que estava preso. `enter_playing` apaga um INPUT atrasado, que o link aceita
+  em qualquer modo e que pode chegar durante a pausa, depois do primeiro zeramento. O G prende
+  A+L+R, força conflito, manda PLACE_PC e exige `SRAM[1..2] == 0`. No fluxo dele qualquer um dos
+  dois basta, então remover um deles não quebra o teste, mas reabre o caso que só ele cobre. Não
+  trate isso como redundância. O G aperta uma tecla de novo no fim para mostrar que o "0" não é
+  vácuo.
