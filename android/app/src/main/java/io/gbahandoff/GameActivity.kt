@@ -35,6 +35,10 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var conflictPanel: ConflictPanel
     private lateinit var notice: NoticeLine
     private lateinit var sendBtn: View
+    private lateinit var menuBtn: MenuButton
+    private lateinit var menuSheet: MenuSheet
+    private lateinit var settingsPanel: SettingsPanel
+    private var menuPaused = false   // the menu sheet / settings are open: the game is paused until they close
     private val ui = Handler(Looper.getMainLooper())
     private val poll = object : Runnable {
         override fun run() { refreshLink(); ui.postDelayed(this, POLL_MS) }
@@ -54,6 +58,8 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         }
         root.addView(padHost, FrameLayout.LayoutParams(-1, -1))
         roms = LinkClient.boot(this)
+        menuBtn = MenuButton(this) { openMenu() }
+        root.addView(menuBtn, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START))
         // link UI above the pad: compact and semi-transparent
         val dp = { v: Float -> LinkUi.dp(this, v) }
         sendBtn = LinkUi.chip(this, "Enviar ao PC") { LinkClient.sendToPc() }.apply { visibility = View.GONE }
@@ -62,10 +68,14 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         root.addView(notice, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(6f) })
         onPcPill = OnPcPill(this) { LinkClient.setControlMode(this, false); refreshLink() }
         root.addView(onPcPill, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START))
-        choicePanel = ChoicePanel(this) { k, first -> LinkUi.answer(this, k, first) }
+        choicePanel = ChoicePanel(this) { k, first -> LinkUi.answer(this, k, first); settingsPanel.refresh() }
         root.addView(choicePanel, FrameLayout.LayoutParams(-1, -1))
         conflictPanel = ConflictPanel(this) { h, keepPhone -> LinkClient.resolve(h, keepPhone) }
         root.addView(conflictPanel, FrameLayout.LayoutParams(-1, -1))
+        menuSheet = MenuSheet(this, { onMenuPick(it) }) { resumeFromMenu() }
+        root.addView(menuSheet, FrameLayout.LayoutParams(-1, -1))
+        settingsPanel = SettingsPanel(this) { resumeFromMenu() }
+        root.addView(settingsPanel, FrameLayout.LayoutParams(-1, -1))
         root.addOnLayoutChangeListener { _, l, t, r, b, _, _, _, _ -> layoutScreen(r - l, b - t) }
         setContentView(root)
         hideSystemBars()
@@ -102,6 +112,33 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         }.also { it.isDaemon = true }.start()
     }
 
+    /** Tap on the menu button: pause the game and show the sheet. */
+    private fun openMenu() {
+        if (padHost?.editing == true || menuPaused) return
+        val h = sha1 ?: return
+        val st = LinkClient.state()
+        val here = h in st.onPc
+        menuPaused = true
+        Native.stop()
+        Native.setKeys(0); LinkClient.sendKeys(0)
+        menuSheet.show(GameMenuLogic.items(st.status == LinkClient.CONNECTED, here, LinkClient.controlMode(this)))
+    }
+
+    private fun onMenuPick(item: GameMenuLogic.Item) {
+        when (item) {
+            GameMenuLogic.Item.EDIT -> { menuPaused = false; padHost?.enterEdit() }   // the editor keeps the game paused
+            GameMenuLogic.Item.SETTINGS -> settingsPanel.show()                      // still paused until it closes
+            GameMenuLogic.Item.SEND -> { LinkClient.sendToPc(); resumeFromMenu() }
+            GameMenuLogic.Item.EXIT -> { menuPaused = false; finish() }              // onPause saves
+        }
+    }
+
+    private fun resumeFromMenu() {
+        if (!menuPaused) return
+        menuPaused = false
+        if (sha1 != null && padHost?.editing != true) Native.start()
+    }
+
     private fun refreshLink() {
         val h = sha1 ?: return
         val st = LinkClient.state()
@@ -124,6 +161,7 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         if (c != null) conflictPanel.show(c, roms.find(c.sha1)?.title?.ifBlank { null } ?: "jogo ${Fmt.shortSha(c.sha1)}") else conflictPanel.hide()
         if (c != null) choicePanel.hide()
         else LinkUi.updateChoice(choicePanel, st) { sha -> roms.find(sha)?.title?.ifBlank { null } ?: "jogo ${Fmt.shortSha(sha)}" }
+        settingsPanel.refresh()
     }
 
     /** Cable out and the game is on the PC: playing here makes a second version of it. Say so first. */
@@ -169,6 +207,19 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         val blocked = ArrayList<FloatArray>()
         padHost?.occupiedRects(blocked)
         val m = LinkUi.dp(this, 4f).toFloat()
+        // the menu button goes first, anywhere on the screen (its own corner); the chips then avoid it too
+        if (padHost?.editing == true) menuBtn.visibility = View.GONE else {
+            menuBtn.visibility = View.VISIBLE
+            val d = resources.displayMetrics.density
+            val s = GameMenuLogic.BUTTON_DP * d
+            val mp = GameMenuLogic.buttonPos(curW.toFloat(), curH.toFloat(), d, blocked)
+            val lp = menuBtn.layoutParams as FrameLayout.LayoutParams
+            if (lp.leftMargin != mp[0].toInt() || lp.topMargin != mp[1].toInt()) {
+                lp.gravity = Gravity.TOP or Gravity.START; lp.leftMargin = mp[0].toInt(); lp.topMargin = mp[1].toInt()
+                menuBtn.layoutParams = lp
+            }
+            blocked.add(floatArrayOf(mp[0] - m, mp[1] - m, mp[0] + s + m, mp[1] + s + m))
+        }
         place(onPcPill, area, blocked, m, Placement.PREFER_TOP_LEFT)
         place(sendBtn, area, blocked, m, Placement.PREFER_TOP_RIGHT)
     }
@@ -204,13 +255,17 @@ class GameActivity : Activity(), SurfaceHolder.Callback {
         super.onResume()
         hideSystemBars()
         LinkClient.onForeground(this)
-        if (sha1 != null && padHost?.editing != true) Native.start()
+        if (sha1 != null && padHost?.editing != true && !menuPaused) Native.start()
         ui.post(poll)
     }
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (padHost?.exitEdit() != true) @Suppress("DEPRECATION") super.onBackPressed()
+        when {
+            settingsPanel.shown -> { settingsPanel.hide(); resumeFromMenu() }
+            menuSheet.shown -> menuSheet.hide()
+            padHost?.exitEdit() != true -> @Suppress("DEPRECATION") super.onBackPressed()
+        }
     }
 
     override fun onPause() {

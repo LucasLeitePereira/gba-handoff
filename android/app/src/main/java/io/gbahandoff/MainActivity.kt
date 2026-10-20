@@ -44,9 +44,13 @@ class MainActivity : Activity() {
         }
         val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         head.addView(TextView(this).apply { text = getString(R.string.app_name); textSize = 20f }, LinearLayout.LayoutParams(0, -2, 1f))
-        head.addView(LinkUi.chip(this, "\u2699 Configura\u00e7\u00f5es") { settingsPanel.show() }.apply {
-            setTextColor(Color.DKGRAY); background = null
-        })
+        // 48 dp touch target (Material minimum); always visible: it sits in the header, outside the scrolling list
+        head.addView(TextView(this).apply {
+            text = "\u2699"; textSize = 26f; gravity = Gravity.CENTER; setTextColor(Color.DKGRAY)
+            contentDescription = "Configura\u00e7\u00f5es"
+            isClickable = true
+            setOnClickListener { settingsPanel.show() }
+        }, LinearLayout.LayoutParams(dp(48f), dp(48f)))
         col.addView(head)
         linkText = TextView(this).apply { textSize = 12f; setPadding(0, dp(2f), 0, dp(6f)) }
         col.addView(linkText)

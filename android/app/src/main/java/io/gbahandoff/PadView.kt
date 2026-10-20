@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
-import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 
@@ -12,8 +11,7 @@ import android.view.View
  * Virtual gamepad: D-pad, A, B, L, R, Start, Select, laid out by [PadLayout] (per orientation,
  * persisted by [PadLayoutStore]). Play mode: multitouch, every event recomputes the pressed set from
  * ALL active pointers. Edit mode: drag a control to move it, tap to select it.
- * Entry to edit mode: LONG-PRESS (0.7 s) on the small gear at the top-center (a plain tap does
- * nothing, so it cannot be hit by accident mid-game).
+ * Edit mode is entered from the game menu button (see GameActivity), not from the pad itself.
  * No allocation in onTouchEvent/onDraw (rects/paints are preallocated).
  */
 class PadView(
@@ -35,11 +33,6 @@ class PadView(
     private val white = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFFFFFFF.toInt() }
     private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF202020.toInt(); textAlign = Paint.Align.CENTER }
     private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 2 * density }
-    private val gearPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; strokeWidth = 2 * density; color = 0x66FFFFFF; strokeCap = Paint.Cap.ROUND
-    }
-    private val gear = RectF()
-    private val gearLines = FloatArray(6 * 4)
     private var keys = 0
 
     // Edit state.
@@ -47,25 +40,16 @@ class PadView(
         set(v) {
             if (field == v) return
             field = v
-            if (v) { setKeysNow(0); cancelGear() } else selected = -1
+            if (v) setKeysNow(0) else selected = -1
             drag = -1
             invalidate()
         }
     var selected = -1
         private set
     var onSelectionChanged: (() -> Unit)? = null
-    var onGearLongPress: (() -> Unit)? = null
     private var drag = -1
     private var dragPointer = -1
     private var dragDx = 0f; private var dragDy = 0f
-    private var gearDown = false
-    private val gearRun = Runnable {
-        if (gearDown) {
-            gearDown = false
-            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-            onGearLongPress?.invoke()
-        }
-    }
 
     fun selectedAlpha() = if (selected >= 0) layout.alpha[selected] else layout.alpha[0]
     fun selectedScale() = if (selected >= 0) layout.scale[selected] else 1f
@@ -88,16 +72,6 @@ class PadView(
         if (land != layout.land || ow == 0 && oh == 0) layout = store.load(land)
         layout.clampAll(vw, vh)
         relayout()
-        val g = 36 * density
-        gear.set(vw / 2 - g / 2, 4 * density, vw / 2 + g / 2, 4 * density + g)
-        // 6 teeth: radial ticks around the gear's ring.
-        val cx = gear.centerX(); val cy = gear.centerY(); val r0 = g * 0.28f; val r1 = g * 0.42f
-        for (i in 0 until 6) {
-            val a = i * (Math.PI / 3).toFloat()
-            val ca = Math.cos(a.toDouble()).toFloat(); val sa = Math.sin(a.toDouble()).toFloat()
-            gearLines[i * 4] = cx + ca * r0; gearLines[i * 4 + 1] = cy + sa * r0
-            gearLines[i * 4 + 2] = cx + ca * r1; gearLines[i * 4 + 3] = cy + sa * r1
-        }
     }
 
     private fun relayout() {
@@ -116,20 +90,8 @@ class PadView(
         return x >= rc.left - s && x <= rc.right + s && y >= rc.top - s && y <= rc.bottom + s
     }
 
-    private fun inGear(x: Float, y: Float): Boolean {
-        val s = 6 * density
-        return x >= gear.left - s && x <= gear.right + s && y >= gear.top - s && y <= gear.bottom + s
-    }
-
-    /** Adds the screen areas that touches may land on (controls and the gear, with the hit slop) to [out]. */
-    fun occupiedRects(out: MutableList<FloatArray>) {
-        val s = 8 * density
-        for (i in 0 until n) { val r = rects[i]; out.add(floatArrayOf(r.left - s, r.top - s, r.right + s, r.bottom + s)) }
-        val g = 6 * density
-        out.add(floatArrayOf(gear.left - g, gear.top - g, gear.right + g, gear.bottom + g))
-    }
-
-    private fun cancelGear() { gearDown = false; removeCallbacks(gearRun) }
+    /** Adds the screen areas that touches may land on (controls, with the hit slop) to [out]. */
+    fun occupiedRects(out: MutableList<FloatArray>) = layout.occupiedRects(vw, vh, 8 * density, out)
 
     override fun onTouchEvent(e: MotionEvent): Boolean =
         if (editing) editTouch(e) else playTouch(e)
@@ -137,13 +99,6 @@ class PadView(
     private fun playTouch(e: MotionEvent): Boolean {
         var k = 0
         val act = e.actionMasked
-        if (act == MotionEvent.ACTION_DOWN && inGear(e.x, e.y)) {
-            gearDown = true
-            postDelayed(gearRun, 700)
-        } else if (gearDown && (act == MotionEvent.ACTION_UP || act == MotionEvent.ACTION_CANCEL ||
-                act == MotionEvent.ACTION_POINTER_DOWN || (act == MotionEvent.ACTION_MOVE && !inGear(e.x, e.y)))) {
-            cancelGear()
-        }
         if (act != MotionEvent.ACTION_UP && act != MotionEvent.ACTION_CANCEL) {
             val skip = if (act == MotionEvent.ACTION_POINTER_UP) e.actionIndex else -1
             val dp = rects[PadIds.DPAD]
@@ -224,10 +179,6 @@ class PadView(
                 c.drawRect(rc, outline)
             }
         }
-        if (!editing) {
-            c.drawCircle(gear.centerX(), gear.centerY(), gear.width() * 0.2f, gearPaint)
-            c.drawLines(gearLines, gearPaint)
-        }
     }
 
     private fun drawDpad(c: Canvas, d: RectF, idle: Float, pressed: Float) {
@@ -242,5 +193,4 @@ class PadView(
         if (keys and Native.KEY_RIGHT != 0) c.drawRect(dcx + t / 2, dcy - t / 2, d.right, dcy + t / 2, white)
     }
 
-    override fun onDetachedFromWindow() { cancelGear(); super.onDetachedFromWindow() }
 }

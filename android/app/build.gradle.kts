@@ -1,3 +1,14 @@
+import java.util.Properties
+
+// Version: single source of truth is /workspace/VERSION (code=N, name=X.Y), shared with the desktop build.
+val versionProps = Properties().also { props ->
+    val f = rootProject.projectDir.parentFile.resolve("VERSION")
+    if (!f.isFile) throw GradleException("Arquivo VERSION não encontrado em ${f.absolutePath} (esperado: code=N e name=X.Y)")
+    f.inputStream().use { props.load(it) }
+}
+fun versionKey(k: String): String = versionProps.getProperty(k)?.trim()?.takeIf { it.isNotEmpty() }
+    ?: throw GradleException("VERSION sem a chave '$k' (esperado: code=N e name=X.Y)")
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -13,8 +24,8 @@ android {
         applicationId = "io.gbahandoff"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = versionKey("code").toIntOrNull() ?: throw GradleException("VERSION: 'code' deve ser inteiro")
+        versionName = versionKey("name")
 
         ndk {
             // x86_64 only for the emulator; real devices are arm.
@@ -38,8 +49,23 @@ android {
         }
     }
 
+    // Same key for debug and release: `adb install -r` over the installed app keeps the save only if the
+    // certificate is identical. Default = the key that signed the app already on the user's phone.
+    signingConfigs {
+        create("handoff") {
+            storeFile = file(System.getenv("GBAH_KEYSTORE") ?: "${System.getProperty("user.home")}/.android/debug.keystore")
+            storePassword = System.getenv("GBAH_KEYSTORE_PASS") ?: "android"
+            keyAlias = System.getenv("GBAH_KEY_ALIAS") ?: "androiddebugkey"
+            keyPassword = System.getenv("GBAH_KEY_PASS") ?: "android"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("handoff")
+        }
         release {
+            signingConfig = signingConfigs.getByName("handoff")
             isMinifyEnabled = false
         }
     }

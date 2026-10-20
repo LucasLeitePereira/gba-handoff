@@ -70,7 +70,6 @@ class PadHost(
         allBar.setOnSeekBarChangeListener(listener({ pad.setAllAlpha(0.1f + it / 100f); syncing = true; alphaBar.progress = it; syncing = false }) { pad.save() })
 
         pad.onSelectionChanged = { sync() }
-        pad.onGearLongPress = { enterEdit() }
     }
 
     private fun row(name: String, bar: SeekBar, value: TextView): LinearLayout {
@@ -113,7 +112,8 @@ class PadHost(
         syncing = false
     }
 
-    private fun enterEdit() {
+    /** Opens the layout editor (from the game menu). */
+    fun enterEdit() {
         if (pad.editing) return
         pad.editing = true
         panel.visibility = View.VISIBLE

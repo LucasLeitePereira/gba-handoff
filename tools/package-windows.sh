@@ -12,7 +12,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXE="$ROOT/build-win/desktop/gbahandoff.exe"
 APK="$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
 DIST="${GBAH_DIST:-$ROOT/dist}"   # override for tests
-PKG="$DIST/GBAHandoff-windows/GBAHandoff"
+STAGE="$(mktemp -d)"; trap 'rm -rf "$STAGE"' EXIT
+# Staged outside dist/: dist/GBAHandoff-windows/ is where the user unzips and runs the package
+# (its adb.exe may be running and locked), so it must never be deleted here.
+PKG="$STAGE/GBAHandoff"
 ZIP="$DIST/GBAHandoff-windows.zip"
 
 [ -f "$EXE" ] || { echo "ERROR: $EXE not found. Run: cmake --preset build-win && cmake --build --preset build-win" >&2; exit 1; }
@@ -21,7 +24,7 @@ if [ ! -f "$ROOT/build-win/desktop/adb/adb.exe" ]; then
   "$ROOT/tools/fetch-adb-windows.sh" "$ROOT/build-win/desktop"
 fi
 
-rm -rf "$DIST/GBAHandoff-windows" "$ZIP"
+mkdir -p "$DIST"; rm -f "$ZIP"
 mkdir -p "$PKG/adb"
 cp "$EXE" "$PKG/gbahandoff.exe"
 cp "$ROOT"/build-win/desktop/adb/* "$PKG/adb/"
@@ -40,7 +43,7 @@ printf '%s\r\n' \
   "5. Jogue: arraste uma ROM .gba para a janela e Esc abre o menu do jogo." \
   > "$PKG/LEIA-ME.txt"
 
-( cd "$DIST/GBAHandoff-windows" && if command -v zip >/dev/null; then zip -qr "$ZIP" GBAHandoff
+( cd "$STAGE" && if command -v zip >/dev/null; then zip -qr "$ZIP" GBAHandoff
   else python3 -I - "$ZIP" <<'PY'
 import os, sys, zipfile
 out = sys.argv[1]

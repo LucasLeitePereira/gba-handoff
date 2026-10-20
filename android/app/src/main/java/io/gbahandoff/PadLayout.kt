@@ -45,6 +45,15 @@ class PadLayout(val land: Boolean) {
         cy[i] = if (fy >= 0.5f) 0.5f else cy[i].coerceIn(fy, 1f - fy)
     }
 
+    /** Touch areas of all controls (hit slop [slop] px around each), as [l,t,r,b], for placing floating widgets. */
+    fun occupiedRects(w: Float, h: Float, slop: Float, out: MutableList<FloatArray>) {
+        for (i in 0 until PadIds.COUNT) {
+            val x = centerXpx(i, w); val y = centerYpx(i, h)
+            val hw = halfW(i, w, h) + slop; val hh = halfH(i, w, h) + slop
+            out.add(floatArrayOf(x - hw, y - hh, x + hw, y + hh))
+        }
+    }
+
     fun clampAll(w: Float, h: Float) { for (i in 0 until PadIds.COUNT) clamp(i, w, h) }
 
     /** Moves the control so its center is at pixel (px, py) (clamped). */
