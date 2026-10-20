@@ -34,4 +34,5 @@ _(atualizado pelo sênior após cada tarefa)_
 - [Fase 3] Ótimo achado: bug real em código (bool retornando -1). Continue relatando bugs que encontrar ao verificar, sem corrigir.
 - [Commit] O repo agora tem commits: use `git rev-parse --short HEAD` no campo `commit` (não mais `sem-commit`).
 - [Fase 4a] Ótimo: corrigiu o material do dev (PC_STATUS não tem ordem fixa; TIMEOUT 120 só nos _san) e apontou doc antigo desatualizado. Ao documentar uma fase, procure também docs existentes que ela tornou obsoletos e proponha a nova versão na mesma entrega.
+- [Fase 4b] 7/7 aprovados (4 sem ajuste). Ótimo: achou 3 docs obsoletos sozinho, recusou números não verificados (<1 ms) e corrigiu a cadência do autosave. Padrão a manter.
 - O revisor NÃO roda sozinho: após escrever, o sênior roda `docserver revisar`. Não espere o watcher.

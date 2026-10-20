@@ -2,11 +2,11 @@
 titulo: Decisões do protocolo gbahp e do transporte PC-celular
 tipo: decisao
 gerado_por: claude-sonnet-5-5
-commit: f84dedf
+commit: 50fe505
 arquivos: proto/gbahp.h, proto/gbahp.c, proto/gbahp_net.c, desktop/link.cpp, desktop/handoff.cpp, android/app/src/main/cpp/link_jni.c, android/app/src/main/java/io/gbahandoff/LinkClient.kt
 revisado_por: claude-opus-5-5
-revisado_em: 2026-10-20T12:37:26Z
-parecer: Conferi as afirmações novas no código e elas batem com o lado PC. Em proto/gbahp.h: GBAHP_VERSION 2, GBAHP_LIB_ENTRY_BYTES 89 com sha1, size (0 = sem ROM), has_data, versão, base, timestamp e frame, as flags MIRROR/RESOLVED/HANDOFF, os status OK/CONFLICT/NO_ROM/ERROR/STALE, os comandos CONTROL RETURN/FETCH/PC_STATUS/ROM_UNAVAILABLE, a mensagem THUMB e GBAHP_ROM_CHUNK de 256 KB. Em desktop/link.cpp:361, kMaxRomSize é 32 MiB e o tamanho total 0 também é ignorado. Em desktop/handoff.cpp, held_ segura o push sem ROM e responde NO_ROM quando chega ROM_UNAVAILABLE. Em proto/gbahp.c, PROTO_MISMATCH e CORE_MISMATCH estão no gbahp_hello_compat. MainActivity.kt ainda mostra 'versão do emulador incompatível' para qualquer ST_REFUSED.; Correção: 'os dois lados enviam LIBRARY, e agora ela é a base da decisão de sync' vale só para o PC. Em link_jni.c:117 o celular ainda manda LIBRARY vazia ('nothing to offer yet') e ignora as mensagens que recebe além de PING/PONG (linha 136). Ajustei o texto para dizer que, no commit f84dedf, o celular ainda não implementa sync, handoff nem ROM_PUSH. Sem isso, quem estiver depurando vai procurar a lógica no app.; Tirei uma frase repetida: a recusa por versão de protocolo diferente já aparece no item do HELLO. Agora o item do HELLO também cita os códigos PROTO_MISMATCH/CORE_MISMATCH.; O documento substitui a versão aprovada e atualiza o que mudou: antes a LIBRARY era só informativa e o servidor ignorava ROM_PUSH/STATE_PUSH. Não repete decisoes-arquitetura-plataforma nem contrato-handoff-estado e remete a sync-regras-versao para as regras de versão. Não tem segredos nem dados pessoais.
+revisado_em: 2026-10-20T13:44:51Z
+parecer: Conferi no código as afirmações que mudaram desde a versão f84dedf. Em android/app/src/main/cpp/link_jni.c:1-8, o comentário diz que toda a lógica está em phone_link.c e que este arquivo só faz a cola JNI. Diz também que a UI consulta phone_ui_text() (nativeUiText, linha 139). Isso bate com 'link_jni.c só cola' e com 'a UI consulta o estado por texto'.; Em phone_link.c:1408 e :1436 há duas threads (save_main e link_main), como diz o texto: 'uma de link e uma de autosave'. A reconexão bate com o código: RETRY_MIN_MS 2000, RETRY_MAX_MS 10000 e delay*3/2 nas linhas 34-35 e 1371-1372. Depois de PL_ST_REFUSED o app espera RETRY_MAX_MS (linha 1382), ou seja, os 10 s. PING_EVERY_MS 5000 e IDLE_TIMEOUT_MS 15000 estão nas linhas 36-37.; O item 'todas as mensagens implementadas ponta a ponta nos dois lados' se confirma. O celular codifica LIBRARY com entradas reais (linha 1011), STATE_PUSH (536), STATE_ACK (457), ROM_REQUEST (678), ROM_PUSH em pedaços (854), CONTROL RETURN/FETCH/ROM_UNAVAILABLE (806, 1116, 1120) e PING (1324). O laço de recepção (1237-1293) trata LIBRARY, CONTROL (PC_STATUS e ROM_UNAVAILABLE), STATE_PUSH, STATE_ACK, ROM_REQUEST, ROM_PUSH e THUMB. Só o PC envia THUMB (handoff.cpp:212) e o celular a recebe; isso cobre o fluxo de conflito, então o texto continua correto.; A mensagem 'versão do emulador incompatível' para qualquer REFUSED continua em MainActivity.kt:85. Os demais itens são iguais aos da versão aprovada, que já tinham sido conferidos.; O documento substitui conhecimento/protocolo-decisoes.md e só atualiza o que mudou na Fase 4b: o cliente agora fica em phone_link.c, com duas threads, e a implementação está completa no celular. Não repete decisoes-arquitetura-plataforma nem contrato-handoff-estado, só remete a eles. Explica os porquês: framing campo a campo, só loopback, cliente em C para reusar proto/, ROM em pedaços para não travar PONG/ACK e a miniatura crua provisória. Não tem segredos nem dados pessoais.; Ressalva que não bloqueia a aprovação: o front matter `arquivos` deveria incluir android/app/src/main/cpp/phone_link.c, que agora é onde fica a lógica do cliente.
 ---
 
 # Decisões do protocolo gbahp e do transporte
@@ -24,10 +24,10 @@ Contexto: PC (servidor) e celular (cliente) conversam por TCP sobre `adb reverse
 - **Só loopback, porta 27183**: o servidor escuta em 127.0.0.1 (nada exposto na rede) e o celular conecta em
   `localhost`, com o `adb reverse` levando ao PC. No celular a porta é fixa; no PC é o padrão e pode ser trocada com
   `--port`, mas aí o celular não conecta mais.
-- **Cliente Android em C (`link_jni.c`), não Kotlin.** Reusa o mesmo `proto/` do desktop (codec e parser existem uma
-  vez) e evita JNI por mensagem. Uma thread nativa só; a UI consulta `status()`/`peerName()` a cada 1 s (sem callbacks
-  para Java, logo sem attach de JNIEnv). Reconexão: 2 s, com backoff x1,5 até 10 s. O celular dá PING a cada 5 s; o
-  servidor responde PONG e derruba a sessão após 15 s sem nenhum frame.
+- **Cliente Android em C, não Kotlin** (`phone_link.c`; `link_jni.c` só cola). Reusa o mesmo `proto/` do desktop
+  e evita JNI por mensagem; a UI consulta o estado por texto (android-motor-phone-link). Uma thread de link
+  (reconexão: 2 s, backoff x1,5 até 10 s) e uma de autosave. O celular dá PING a cada 5 s; o servidor responde PONG e
+  derruba a sessão após 15 s sem nenhum frame.
 - **LIBRARY simétrica é a base da decisão de sync.** Cada entrada (89 bytes) leva SHA-1, tamanho da ROM (0 = sem o
   arquivo), `has_data` e, havendo progresso, versão (id do aparelho + counter), base, timestamp e frame (regras em
   sync-regras-versao). Não leva imagens: para conflito existe a mensagem THUMB própria.
@@ -43,8 +43,8 @@ Contexto: PC (servidor) e celular (cliente) conversam por TCP sobre `adb reverse
 - **ROM em pedaços de 256 KB** (`GBAHP_ROM_CHUNK`; completa quando offset + tamanho do pedaço = total), para que
   mensagens pequenas (PONG, ACK, CONTROL) passem entre os pedaços. O PC ignora ROM_PUSH com tamanho total 0 ou acima
   de 32 MiB.
-- **Estado da implementação (commit f84dedf):** LIBRARY, STATE_PUSH/ACK, ROM_PUSH, CONTROL e THUMB estão implementados
-  ponta a ponta só no desktop. O cliente Android ainda manda LIBRARY vazia e ignora tudo além de PING/PONG.
+- **Estado da implementação (commit 50fe505):** todas as mensagens estão implementadas ponta a ponta nos dois lados
+  (o celular cobre LIBRARY, STATE_PUSH/ACK, ROM, CONTROL e THUMB).
 - **Servidor atende uma conexão por vez e a nova vence:** se chega conexão enquanto há uma ativa, a antiga (provavelmente
   morta, app reiniciado) é derrubada.
 - **Miniatura crua, XBGR8888 240x160 (`GBAHP_THUMB_BYTES`)**, no STATE_PUSH e na THUMB. Decisão provisória (~150 KB sem

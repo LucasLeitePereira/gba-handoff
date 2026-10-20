@@ -49,4 +49,6 @@ _(atualizado pelo sênior após cada tarefa)_
 - [Fase 4a] Excelente: revisou o WIP alheio com olho crítico e achou bug real (push no-op voltava o jogo no tempo). Testes de processo filho: fork + PR_SET_PDEATHSIG + kill_all no atexit/sinais — padrão obrigatório.
 - [Fase 4a] Processos <defunct> com pai PID 1 são inofensivos aqui; filtre por estado Z ao checar órfãos.
 - [Fase 4a] Corrigiu um bug sem teste (on_push no-op): quando corrigir bug, acrescente um teste de regressão.
+- [Fase 4b] Excelente: motor C sem JNI testado no host contra o desktop real, achou bug com o teste, migração com backup permanente. Desvios do pedido (snapshot em outra thread) foram declarados — continue declarando.
+- [Fase 4b] Dados do usuário: qualquer mudança de formato em disco exige migração idempotente + cópia legada intocada + teste. Nunca recomende desinstalar o app (perde o save).
 - [Fase 0] A máquina tem só 3 GB de RAM e 8 núcleos: limite paralelismo (`-j4`) e Gradle (`org.gradle.jvmargs=-Xmx1g`, sem daemon).
