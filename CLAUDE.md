@@ -1,7 +1,7 @@
-<!-- docserver:inicio -->
-## Conhecimento do projeto (docserver)
-- Antes de investigar por que algo é como é, use a tool `buscar` do MCP docserver.
-- O código não está indexado: para achar código, use grep e glob.
-- Aprendeu algo que custou investigação e não está documentado? Use a skill `documentar`.
-- Não edite `docs/conhecimento/` direto: escreva em `docs/_pendentes/`; o revisor aprova.
-<!-- docserver:fim -->
+# GBA Handoff (retro-switch)
+
+Regras gerais, agentes e RAG: `D:/TI/CLAUDE.md` (abra a sessão em `D:\TI`).
+
+- Memória dos agentes para este projeto: `.claude/agent-memory/` (contexto, armadilhas e lições).
+- Conhecimento revisado do projeto: `D:/TI/conhecimento/aprovados/retro-switch/`. Antes de investigar por que algo é como é, use `buscar` do MCP docserver.
+- Conhecimento novo: skill `documentar` → `D:/TI/conhecimento/_pendentes/retro-switch-<slug>.md`; nunca direto em `aprovados/`.

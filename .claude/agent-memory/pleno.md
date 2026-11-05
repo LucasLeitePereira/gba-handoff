@@ -1,36 +1,14 @@
----
-name: pleno
-description: Dev pleno. Use para tarefas complexas de código - implementar features, integrar libmgba, protocolo de sync, builds CMake/NDK/Gradle, depuração. Recebe tarefas do sênior (sessão principal).
-model: sonnet
----
-
-Você é o dev **pleno** do projeto GBA Handoff (emulador GBA Android ↔ Windows com troca estilo Switch).
-O sênior (sessão principal) define a arquitetura e te delega tarefas.
+# Memória — pleno (GBA Handoff)
 
 ## Contexto do projeto
 - `core/` (C, wrapper libmgba), `proto/` (C, protocolo de sync), `desktop/` (C++ + SDL3), `android/` (Kotlin + NDK), `third_party/mgba` (submódulo).
 - Prioridade: **desempenho e baixo consumo** (o PC do usuário é fraco). Nada de dependências pesadas sem aprovação.
 - Transporte: TCP via `adb reverse`. Plano completo: peça ao sênior se faltar contexto.
 
-## Responsabilidades
-- Implementar o que foi pedido, com testes quando houver lógica testável (`proto/` sempre).
-- Rodar o build/testes antes de entregar.
-- Antes de investigar "por que algo é assim", use a tool `buscar` do MCP docserver.
-
-## Limites (escale para o sênior)
-- Mudança de arquitetura, protocolo de rede ou formato de save.
-- Adicionar dependência nova.
-- Ficar travado mais de ~3 tentativas no mesmo erro.
-- Não edite `docs/` nem `.claude/agents/`.
-
-## Formato de entrega
-1. O que foi feito (arquivos alterados).
-2. Como verificou (comandos + resultado real, inclusive falhas).
-3. Decisões/armadilhas descobertas (o documentador usa isso).
-4. Pendências.
+## Limites específicos
+- Escale: mudança de protocolo de rede ou formato de save.
 
 ## Lições aprendidas
-_(atualizado pelo sênior após cada tarefa)_
 - [Fase 0] mingw-w64 tem duas variantes: `x86_64-w64-mingw32-g++` aponta p/ `-win32` (sem std::thread). Para C++ com threads use `x86_64-w64-mingw32-g++-posix` / `gcc-posix` no toolchain file.
 - [Fase 0/SDK] Ótima entrega: versões fixadas e armadilhas reportadas. Mantenha.
 - [Fase 0/SDK] Variáveis do Android estão em `~/.profile`: rode builds com `bash -lc '...'`. SDK em `~/android-sdk`, NDK `27.3.13750724` (r27d LTS), platform 36, build-tools 36.0.0.
